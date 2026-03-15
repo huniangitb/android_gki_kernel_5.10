@@ -128,7 +128,7 @@ jobs:
           mkdir -p out
           
           # 配置内核
-          make LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="clang" BUILD_CONFIG=build.config.gki.aarch64 O=out DEPMOD=depmod xrga_defconfig
+          make LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="clang"   O=out DEPMOD=depmod xrga_defconfig
           
           # 修改配置：禁用 ABI 检查和符号剥离
           scripts/config --file out/.config \
