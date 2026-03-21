@@ -94,7 +94,7 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabihf-
           export PATH=$AOSP_CLANG_PATH/bin:$PATH
           export LLVM=1
-          export LLVM_IAS=0
+          export LLVM_IAS=1
           export KCFLAGS="-Wno-error -Wno-deprecated-declarations"
           export KBUILD_BUILD_VERSION="0"
           export SOURCE_DATE_EPOCH=$(date +%s)
