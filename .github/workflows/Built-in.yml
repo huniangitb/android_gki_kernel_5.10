@@ -78,32 +78,7 @@ jobs:
             done
           fi
       
-      - name: 创建 ABI 符号文件
-        run: |
-          # 创建必要的目录
-          mkdir -p /home/runner/work/android_gki_kernel_5.10_common/android_gki_kernel_5.10_common/kernel_workspace/common/out/android12-5.10/common/
-          mkdir -p ${{ github.workspace }}/kernel_workspace/common/out/android12-5.10/common/
-          
-          # 创建空的 ABI 符号文件
-          touch /home/runner/work/android_gki_kernel_5.10_common/android_gki_kernel_5.10_common/kernel_workspace/common/out/android12-5.10/common/abi_symbollist.raw
-          touch ${{ github.workspace }}/kernel_workspace/common/out/android12-5.10/common/abi_symbollist.raw
-          
-          # 创建简单的符号列表作为备选
-          cat > ${{ github.workspace }}/kernel_workspace/common/out/android12-5.10/common/abi_symbollist.raw << 'EOF'
-          # GKI 基础符号（最小化版本）
-          __kmalloc
-          kfree
-          printk
-          vmalloc
-          vfree
-          kmem_cache_alloc
-          kmem_cache_free
-          mutex_lock
-          mutex_unlock
-          EOF
-          
-          echo "ABI 符号文件已创建"
-      
+         
       - name: 构建内核
         continue-on-error: true
         env:
@@ -131,18 +106,10 @@ jobs:
           make LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="clang"   O=out DEPMOD=depmod gki_defconfig
           
           # 修改配置：禁用 ABI 检查和符号剥离
-          scripts/config --file out/.config \
-            -e LTO_CLANG \
-            -d LTO_NONE \
-            -e LTO_CLANG_THIN \
-            -d LTO_CLANG_FULL \
-            -e THINLTO \
-            -d CONFIG_GKI_HIDDEN_STRIPPING \
-            -d CONFIG_GKI_CUSTOMIZATION \
-            -d CONFIG_ABI_STABLE
+           
             
           # 重新生成配置
-          make olddefconfig O=out
+           
           
           # 编译内核（跳过 ABI 检查）
           echo "开始编译内核..."
