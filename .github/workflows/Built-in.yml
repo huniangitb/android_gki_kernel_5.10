@@ -55,10 +55,11 @@ jobs:
             neofetch
           lscpu
           neofetch
-          wget -O LLVM-20.1.0-Linux-X64.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.0/LLVM-20.1.0-Linux-X64.tar.xz
-          tar -xvaf LLVM-20.1.0-Linux-X64.tar.xz
-          mv LLVM-20.1.0-Linux-X64 aosp-clang
-          rm LLVM-20.1.0-Linux-X64.tar.xz
+          # 使用 LLVM 21 (Clang 21) 官方预编译版本，与 Google Clang 21 等效
+          wget -O LLVM-21.1.0-Linux-X64.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0/LLVM-21.1.0-Linux-X64.tar.xz
+          tar -xvaf LLVM-21.1.0-Linux-X64.tar.xz
+          mv LLVM-21.1.0-Linux-X64 aosp-clang
+          rm LLVM-21.1.0-Linux-X64.tar.xz
           echo "AOSP_CLANG_PATH=$(pwd)/aosp-clang" >> $GITHUB_ENV
           echo "PATH=$(pwd)/aosp-clang/bin:$PATH" >> $GITHUB_ENV
           
@@ -70,20 +71,15 @@ jobs:
       
       - name: 添加制作名称
         run: |
-          cd kernel_workspace
-          cd common
+          cd kernel_workspace/common
           if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            for f in ./arch/arm64/configs/xiaomi_diting_defconfig; do
-              sed -i "s/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=\"-${{ github.event.inputs.kernel_suffix }}\"/" "$f"
-            done
+            # 修改实际使用的 gki_defconfig
+            sed -i "s/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=\"-${{ github.event.inputs.kernel_suffix }}\"/" arch/arm64/configs/gki_defconfig
           fi
       
-         
       - name: 构建内核
-        continue-on-error: true
         env:
-          SKIP_ABI_CHECKS: 1
-          SKIP_MRPROPER: 1
+          SKIP_ABI_CHECKS: 0          # 明确不禁用 ABI 检查
         run: |
           cd kernel_workspace/common
           
@@ -95,7 +91,8 @@ jobs:
           export PATH=$AOSP_CLANG_PATH/bin:$PATH
           export LLVM=1
           export LLVM_IAS=1
-          export KCFLAGS="-Wno-error -Wno-deprecated-declarations"
+          # 添加 regalloc 修复参数，同时保留原有警告抑制
+          export KCFLAGS="-Wno-error -Wno-deprecated-declarations -mllvm -regalloc-enable-advisor=0"
           export KBUILD_BUILD_VERSION="0"
           export SOURCE_DATE_EPOCH=$(date +%s)
           
@@ -103,42 +100,30 @@ jobs:
           mkdir -p out
           
           # 配置内核
-          make LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="clang"   O=out DEPMOD=depmod gki_defconfig
+          make O=out gki_defconfig
           
-          # 修改配置：禁用 ABI 检查和符号剥离
-           
-            
-          # 重新生成配置
-           
-          
-          # 编译内核（跳过 ABI 检查）
+          # 编译内核
           echo "开始编译内核..."
-          make -j$(nproc) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 2>&1 | tee build.log
+          make -j$(nproc) O=out 2>&1 | tee build.log
           
           # 检查编译是否成功
           if [ -f out/arch/arm64/boot/Image ]; then
             echo "内核编译成功！"
           else
-            echo "警告：内核编译可能未完全成功"
+            echo "错误：内核编译失败，Image 文件不存在"
+            exit 1
           fi
       
       - name: 克隆 AnyKernel3 并打包
-        if: success() || failure()  # 即使编译有警告也继续打包
+        if: success()
         run: |
           cd kernel_workspace/common
           git clone https://github.com/Winkmoon/AnyKernel3 --depth=1
           rm -rf ./AnyKernel3/.git
           cd AnyKernel3
-          
-          # 检查 Image 文件是否存在
-          if [ -f ../out/arch/arm64/boot/Image ]; then
-            cp ../out/arch/arm64/boot/Image ./Image
-            zip -r ../AnyKernel3_xiaomi_xrga.zip ./*
-            echo "打包完成！"
-          else
-            echo "错误：Image 文件不存在"
-            exit 1
-          fi
+          cp ../out/arch/arm64/boot/Image ./Image
+          zip -r ../AnyKernel3_xiaomi_xrga.zip ./*
+          echo "打包完成！"
       
       - name: 上传 ZIP 工件
         uses: actions/upload-artifact@v4
