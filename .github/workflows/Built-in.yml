@@ -105,7 +105,10 @@ jobs:
       - name: 构建内核
         run: |
           cd kernel_workspace
-          # 确保使用新的 clang（环境变量覆盖）
+          # 确保使用新的 clang（环境变量覆盖)
+          export CLANG_DIR=$(pwd)/prebuilts-master/clang/host/linux-x86/clang-r547379
+          export PATH="${CLANG_DIR}/bin:${PATH}"
+          export LD_LIBRARY_PATH="${CLANG_DIR}/lib64:${LD_LIBRARY_PATH}"
           export PATH=$(pwd)/prebuilts-master/clang/host/linux-x86/clang-r547379/bin:$PATH
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export LLVM=1 LLVM_IAS=1
