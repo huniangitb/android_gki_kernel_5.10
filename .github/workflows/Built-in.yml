@@ -76,7 +76,8 @@ jobs:
         run: |
           cd kernel_workspace
           sed -i 's/check_defconfig//' ./common/build.config.gki
-          
+          # 尝试 greedy（性能较好且兼容性好）
+          sed -i 's/-regalloc-enable-advisor=release/-regalloc-enable-advisor=greedy/g' common/Makefile
           export LTO=thin SYSTEM_DLKM_RE_SIGN=0 BUILD_SYSTEM_DLKM=0 KMI_SYMBOL_LIST_STRICT_MODE=0
           sed -i '/Makefile/d' common/scripts/Makefile.clean
           sed -i 's# include $(KO_CODE_PATH)/platform/$(MALI_PLATFORM_DIR)/Kbuild# include $(KO_CODE_PATH)/platform/mt6895/Kbuild#g' common/drivers/gpu/mediatek/mali-valhall/gpu/arm/midgard/Makefile || true
