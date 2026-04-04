@@ -35,7 +35,7 @@ jobs:
       - name: 安装基础依赖
         run: |
           sudo apt update
-          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev
+          sudo apt install -y clang curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev
 
       - name: 下载并替换 Clang (r547379)
         run: |
@@ -105,6 +105,7 @@ jobs:
       - name: 构建内核
         run: |
           cd kernel_workspace
+          
           # 确保使用新的 clang（环境变量覆盖)
           export CLANG_DIR=$(pwd)/prebuilts-master/clang/host/linux-x86/clang-r547379
           export PATH="${CLANG_DIR}/bin:${PATH}"
@@ -112,6 +113,8 @@ jobs:
           export PATH=$(pwd)/prebuilts-master/clang/host/linux-x86/clang-r547379/bin:$PATH
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export LLVM=1 LLVM_IAS=1
+          which clang || echo "clang not in PATH"
+          clang --version || echo "clang 无法运行"
           BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh || echo "构建命令执行完毕（忽略错误）"
           echo "内核编译完成！"
 
