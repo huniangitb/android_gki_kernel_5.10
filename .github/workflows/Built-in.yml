@@ -32,10 +32,22 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
-      - name: 安装配置环境依赖
+      - name: 安装基础依赖
         run: |
           sudo apt update
-          sudo apt install -y llvm clang cmake curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev
+          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev
+
+      - name: 下载并替换 Clang (r547379)
+        run: |
+          # 下载新版 clang
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz -O clang-r547379.tar.gz
+          mkdir -p prebuilts/clang/host/linux-x86/clang-r547379
+          tar -xzf clang-r547379.tar.gz -C prebuilts/clang/host/linux-x86/clang-r547379
+          # 替换默认的 prebuilts-master 路径（构建系统会优先使用这个）
+          rm -rf kernel_workspace/prebuilts-master/clang 2>/dev/null || true
+          mkdir -p kernel_workspace/prebuilts-master/clang/host/linux-x86
+          cp -r prebuilts/clang/host/linux-x86/clang-r547379 kernel_workspace/prebuilts-master/clang/host/linux-x86/clang-r547379
+          # 创建软链接或直接设置环境变量，稍后在构建步骤中会修改 build.config.common
 
       - name: Install repo tool
         run: |
@@ -72,16 +84,32 @@ jobs:
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
 
+      - name: 配置构建环境 (禁用 MLGO，使用新版 Clang)
+        run: |
+          cd kernel_workspace
+          # 1. 禁用 MLGO 参数（注释掉两行）
+          sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
+          # 或者完全删除： sed -i '/regalloc-enable-advisor=release/d' common/Makefile
+          
+          # 2. 修改 build.config.common 指向新的 Clang
+          sed -i 's|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r547379/bin|' common/build.config.common
+          
+          # 3. 可选：跳过 defconfig 检查（避免之前出现的配置不匹配错误）
+          sed -i 's/check_defconfig//' ./common/build.config.gki
+          
+          # 4. 其他需要的调整
+          export LTO=thin SYSTEM_DLKM_RE_SIGN=0 BUILD_SYSTEM_DLKM=0 KMI_SYMBOL_LIST_STRICT_MODE=0
+          # 修复可能的 Mali 路径问题（允许失败）
+          sed -i 's# include $(KO_CODE_PATH)/platform/$(MALI_PLATFORM_DIR)/Kbuild# include $(KO_CODE_PATH)/platform/mt6895/Kbuild#g' common/drivers/gpu/mediatek/mali-valhall/gpu/arm/midgard/Makefile || true
+
       - name: 构建内核
         run: |
           cd kernel_workspace
-          sed -i 's/check_defconfig//' ./common/build.config.gki
-          # 尝试 greedy（性能较好且兼容性好）
-          sed -i 's/-regalloc-enable-advisor=release/-regalloc-enable-advisor=greedy/g' common/Makefile
-          export LTO=thin SYSTEM_DLKM_RE_SIGN=0 BUILD_SYSTEM_DLKM=0 KMI_SYMBOL_LIST_STRICT_MODE=0
-          sed -i '/Makefile/d' common/scripts/Makefile.clean
-          sed -i 's# include $(KO_CODE_PATH)/platform/$(MALI_PLATFORM_DIR)/Kbuild# include $(KO_CODE_PATH)/platform/mt6895/Kbuild#g' common/drivers/gpu/mediatek/mali-valhall/gpu/arm/midgard/Makefile || true
-          BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh || echo "完毕"
+          # 确保使用新的 clang（环境变量覆盖）
+          export PATH=$(pwd)/prebuilts-master/clang/host/linux-x86/clang-r547379/bin:$PATH
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export LLVM=1 LLVM_IAS=1
+          BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh || echo "构建命令执行完毕（忽略错误）"
           echo "内核编译完成！"
 
       - name: 克隆 AnyKernel3 并打包
@@ -89,7 +117,6 @@ jobs:
           cd kernel_workspace
           git clone https://github.com/Winkmoon/AnyKernel3 --depth=1
           rm -rf ./AnyKernel3/.git
-          # 复制找到的第一个 Image 文件（通常只有一个）
           IMAGE_FILE=$(find . -name Image | head -n1)
           if [[ -f "$IMAGE_FILE" ]]; then
             cp "$IMAGE_FILE" AnyKernel3/
@@ -98,7 +125,6 @@ jobs:
             exit 1
           fi
           cd AnyKernel3
-          # 生成内核版本信息文件，供 release 使用
           echo "${{ env.KERNEL_VERSION }}" > kernel_version.txt
           ZIPNAME="AnyKernel3_${{ env.KERNEL_VERSION }}.zip"
           zip -r "../$ZIPNAME" ./*
@@ -124,7 +150,7 @@ jobs:
           name: Kernel_ZIP_Artifacts
           path: ./release_zips
 
-      - name: 设置环境变量
+      - name: 设置环境变量并创建 Release
         id: vars
         run: |
           ZIP_FILE=$(ls ./release_zips/*.zip | head -n1)
@@ -132,7 +158,6 @@ jobs:
             echo "错误：未找到 ZIP 文件"
             exit 1
           fi
-          # 从 zip 内读取内核版本，若无则使用 env 中的版本
           KERNEL_VER=$(unzip -p "$ZIP_FILE" kernel_version.txt 2>/dev/null || echo "${{ env.KERNEL_VERSION }}")
           if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
             FULL_VERSION="${KERNEL_VER}-${{ github.event.inputs.kernel_suffix }}"
