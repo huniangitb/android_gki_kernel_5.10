@@ -137,9 +137,8 @@ jobs:
           sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
           
           # 2. 修改 build.config.common 指向新的 Clang
-          CLANG_ABS_PATH="$(pwd)/prebuilts-master/clang/host/linux-x86/clang-r547379/bin"
-          sed -i "s|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=$CLANG_ABS_PATH|" common/build.config.common
-          
+          CLANG_REL_PATH="prebuilts-master/clang/host/linux-x86/clang-r547379/bin"
+          sed -i "s|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=$CLANG_REL_PATH|" common/build.config.common
           # 3. 跳过 defconfig 检查
           sed -i 's/check_defconfig//' ./common/build.config.gki
           
