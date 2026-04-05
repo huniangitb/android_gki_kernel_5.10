@@ -157,7 +157,8 @@ jobs:
           if [[ -f "$CONFIG_FILE" ]]; then
             cp "$CONFIG_FILE" build_artifacts/
             echo "已复制 .config"
-          else
+            mv build_artifacts/.config build_artifacts/config
+            else
             echo "警告: 未找到 $CONFIG_FILE"
           fi
           
