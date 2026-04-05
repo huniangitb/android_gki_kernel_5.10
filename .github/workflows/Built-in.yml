@@ -64,16 +64,9 @@ jobs:
           echo "正在下载 Clang r547379..."
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz -O clang-r547379.tar.gz
           echo "正在解压 Clang..."
-          mkdir -p prebuilts-master/clang/host/linux-x86
-          tar -xzf clang-r547379.tar.gz -C prebuilts-master/clang/host/linux-x86
-          cd prebuilts-master/clang/host/linux-x86
-          # 查找解压出来的目录（排除 . 和 ..）
-          EXTRACTED_DIR=$(ls -d */ 2>/dev/null | grep -v '^\.' | head -n1)
-          if [[ -n "$EXTRACTED_DIR" && "$EXTRACTED_DIR" != "clang-r547379/" ]]; then
-            echo "重命名 $EXTRACTED_DIR 为 clang-r547379"
-            mv "$EXTRACTED_DIR" clang-r547379
-          fi
-          cd ../../../../
+          # 直接解压到目标目录
+          mkdir -p prebuilts-master/clang/host/linux-x86/clang-r547379
+          tar -xzf clang-r547379.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r547379
           echo "Clang 安装完成，路径: $(pwd)/prebuilts-master/clang/host/linux-x86/clang-r547379"
 
       - name: 打印 Clang 工具链详细信息
@@ -94,10 +87,13 @@ jobs:
             echo "✓ Clang 根目录存在"
             echo ""
             echo "bin 目录内容:"
-            ls -la "${CLANG_BASE}/bin/" | head -30
-            echo ""
-            echo "lib64 目录内容:"
-            ls -la "${CLANG_BASE}/lib64/" | head -20
+            if [[ -d "${CLANG_BASE}/bin" ]]; then
+              ls -la "${CLANG_BASE}/bin/" | head -30
+            else
+              echo "✗ bin 目录不存在！"
+              echo "当前目录结构:"
+              ls -la "${CLANG_BASE}/"
+            fi
             echo ""
           else
             echo "✗ Clang 根目录不存在！"
@@ -111,11 +107,9 @@ jobs:
             echo ""
             echo "编译器目标信息:"
             ${CLANG_PATH} -v 2>&1 | grep "Target:"
-            echo ""
-            echo "默认搜索路径:"
-            ${CLANG_PATH} -print-search-dirs 2>&1 | head -10
           else
             echo "✗ 找不到 clang 可执行文件！"
+            echo "请检查解压后的目录结构"
             exit 1
           fi
           echo "=========================================="
@@ -179,11 +173,8 @@ jobs:
           echo "编译器验证:"
           clang --version
           echo "=========================================="
-          echo "链接器验证:"
-          ld.lld --version || echo "ld.lld 未找到"
-          echo "=========================================="
-          
           echo "开始编译内核..."
+          
           BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
           
           echo "内核编译完成！"
