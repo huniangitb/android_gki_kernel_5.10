@@ -113,15 +113,23 @@ jobs:
           BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
           echo "内核编译完成！"
 
-      # ========= 基于官方工具的 ABI 检查 =========
+      # ========= 基于官方工具的 ABI 检查（修复版） =========
       - name: 准备 ABI 工具环境
         run: |
           cd kernel_workspace
-          # 将 kernel-build-tools 添加到 PATH（包含 dump_abi, diff_abi 等）
-          export PATH=$PWD/prebuilts/kernel-build-tools/linux-x86/bin:$PATH
-          echo "$PWD/build/abi" >> $GITHUB_PATH
-          echo "ABI 工具路径: $(which dump_abi 2>/dev/null || echo '未找到 dump_abi')"
-          # 确保 dump_abi 脚本可执行
+          # 添加 prebuilts 中的二进制工具（abidiff 等）
+          PREBUILT_PATH=$PWD/prebuilts/kernel-build-tools/linux-x86/bin
+          # 添加 build/abi 脚本目录
+          ABI_SCRIPT_PATH=$PWD/build/abi
+          # 将路径添加到 $GITHUB_PATH 以便后续步骤使用
+          echo "$PREBUILT_PATH" >> $GITHUB_PATH
+          echo "$ABI_SCRIPT_PATH" >> $GITHUB_PATH
+          # 同时立即生效
+          export PATH="$PREBUILT_PATH:$ABI_SCRIPT_PATH:$PATH"
+          echo "ABI 工具检查:"
+          which dump_abi && dump_abi --help | head -1 || echo "警告: dump_abi 未找到"
+          which diff_abi && diff_abi --help | head -1 || echo "警告: diff_abi 未找到"
+          # 确保脚本可执行
           chmod +x build/abi/dump_abi build/abi/diff_abi 2>/dev/null || true
 
       - name: 运行 ABI 检查 (不阻断编译流程)
@@ -136,8 +144,7 @@ jobs:
           REF_ABI="${KERNEL_SRC}/android/abi_gki_aarch64.xml"
           CUR_ABI="${DIST_DIR}/abi_current.xml"
           ABI_DIFF="${DIST_DIR}/abi_diff.txt"
-          KMI_SYMBOL_LIST="${KERNEL_SRC}/android/abi_gki_aarch64"  # 可选，如果没有符号列表文件可省略
-           
+
           echo "=========================================="
           echo "ABI 检查开始 (基于官方 dump_abi/diff_abi)"
           echo "参考 ABI: ${REF_ABI}"
@@ -156,22 +163,18 @@ jobs:
             exit 0
           fi
 
-          # 将 kernel-build-tools 加入 PATH (dump_abi 依赖)
-          export PATH=$PWD/prebuilts/kernel-build-tools/linux-x86/bin:$PATH
-          # 同时将当前目录的 build/abi 加入 PATH
-          export PATH=$PWD/build/abi:$PATH
+          # 使用绝对路径调用 dump_abi（避免 PATH 问题）
+          DUMP_ABI=$(pwd)/build/abi/dump_abi
+          DIFF_ABI=$(pwd)/build/abi/diff_abi
+
+          if [[ ! -x "${DUMP_ABI}" ]]; then
+            echo "⚠️ 跳过 ABI 检查: dump_abi 脚本不可执行"
+            exit 0
+          fi
 
           echo "生成当前内核的 ABI 表示 (dump_abi)..."
-          # 使用 dump_abi 生成当前内核的 ABI XML
-          # 参数说明：
-          #   --linux-tree: 内核输出目录（包含 vmlinux 和模块）
-          #   --out-file: 输出 ABI XML 文件
-          #   --kmi-symbol-list: 可选，限制只导出 KMI 符号（如果有符号列表文件）
-          if [[ -f "${KMI_SYMBOL_LIST}" ]]; then
-            dump_abi --linux-tree ${OUT_DIR} --out-file ${CUR_ABI} --kmi-symbol-list ${KMI_SYMBOL_LIST}
-          else
-            dump_abi --linux-tree ${OUT_DIR} --out-file ${CUR_ABI}
-          fi
+          # 不指定 --kmi-symbol-list，进行完整 ABI 比较
+          ${DUMP_ABI} --linux-tree ${OUT_DIR} --out-file ${CUR_ABI}
 
           if [[ ! -f "${CUR_ABI}" ]]; then
             echo "⚠️ 生成当前 ABI 失败，跳过检查"
@@ -180,11 +183,7 @@ jobs:
 
           echo "=========================================="
           echo "比较 ABI 差异 (diff_abi)..."
-          # 使用 diff_abi 比较参考 ABI 和当前 ABI
-          # --baseline: 参考 ABI
-          # --new: 新 ABI
-          # --report: 输出报告文件
-          diff_abi --baseline ${REF_ABI} --new ${CUR_ABI} --report ${ABI_DIFF}
+          ${DIFF_ABI} --baseline ${REF_ABI} --new ${CUR_ABI} --report ${ABI_DIFF}
           DIFF_RET=$?
 
           if [[ ${DIFF_RET} -eq 0 ]]; then
