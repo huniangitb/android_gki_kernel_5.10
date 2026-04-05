@@ -159,7 +159,7 @@ jobs:
           # 将 kernel-build-tools 加入 PATH (dump_abi 依赖)
           export PATH=$PWD/prebuilts/kernel-build-tools/linux-x86/bin:$PATH
           # 同时将当前目录的 build/abi 加入 PATH
-          export PATH=$PWD/common/build/abi:$PATH
+          export PATH=$PWD/build/abi:$PATH
 
           echo "生成当前内核的 ABI 表示 (dump_abi)..."
           # 使用 dump_abi 生成当前内核的 ABI XML
