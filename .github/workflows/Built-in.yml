@@ -57,20 +57,20 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
-      - name: 下载并安装自定义 Clang (r547379)
+      - name: 下载并安装自定义 Clang (r596125)
         run: |
           cd kernel_workspace
-          echo "正在下载 Clang r547379..."
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz -O clang-r547379.tar.gz
+          echo "正在下载 Clang r596125..."
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r596125.tar.gz -O clang-r596125.tar.gz
           echo "正在解压 Clang..."
-          mkdir -p prebuilts-master/clang/host/linux-x86/clang-r547379
-          tar -xzf clang-r547379.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r547379
-          echo "Clang 安装完成，路径: $(pwd)/prebuilts-master/clang/host/linux-x86/clang-r547379"
+          mkdir -p prebuilts-master/clang/host/linux-x86/clang-r596125
+          tar -xzf clang-r596125.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r596125
+          echo "Clang 安装完成，路径: $(pwd)/prebuilts-master/clang/host/linux-x86/clang-r596125"
 
       - name: 打印 Clang 工具链详细信息
         run: |
           cd kernel_workspace
-          CLANG_BASE="prebuilts-master/clang/host/linux-x86/clang-r547379"
+          CLANG_BASE="prebuilts-master/clang/host/linux-x86/clang-r596125"
           CLANG_PATH="$(pwd)/${CLANG_BASE}/bin/clang"
           echo "=========================================="
           echo "Clang 工具链详细信息"
@@ -101,7 +101,7 @@ jobs:
         run: |
           cd kernel_workspace
           sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
-          CLANG_REL_PATH="prebuilts-master/clang/host/linux-x86/clang-r547379/bin"
+          CLANG_REL_PATH="prebuilts-master/clang/host/linux-x86/clang-r596125/bin"
           sed -i "s|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=$CLANG_REL_PATH|" common/build.config.common
           sed -i 's/check_defconfig//' ./common/build.config.gki
           echo "CC=clang" >> common/build.config.common
