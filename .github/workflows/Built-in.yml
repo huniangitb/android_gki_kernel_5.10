@@ -49,7 +49,7 @@ jobs:
           repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle --force-sync
           rm -rf common
           echo "正在克隆源码仓库..."
-          git clone --depth=1 https://github.com/ztc1997/android_gki_kernel_5.10_common common -b android12-5.10-2025-12
+          git clone --depth=1 https://github.com/ztc1997/android_gki_kernel_5.10_common common -b android12-5.10-2025-09
           echo "正在去除 ABI 保护 & 去除 dirty 后缀..."
           rm common/android/abi_gki_protected_exports_* || echo "不需要去除保护"
           for f in common/scripts/setlocalversion; do
@@ -97,6 +97,40 @@ jobs:
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
 
+      - name: 追加内核编译配置
+        run: |
+          cd kernel_workspace
+          DEFCONFIG_PATH="common/arch/arm64/configs/gki_defconfig"
+          
+          echo "=========================================="
+          echo "正在追加内核配置到 $DEFCONFIG_PATH"
+          echo "=========================================="
+          
+          # 检查配置文件是否存在
+          if [[ ! -f "$DEFCONFIG_PATH" ]]; then
+            echo "错误: 找不到 $DEFCONFIG_PATH"
+            exit 1
+          fi
+          
+          # 追加配置（如果配置已存在则跳过）
+          echo "" >> "$DEFCONFIG_PATH"
+          echo "# Custom configurations" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_DEBUG_INFO_REDUCED=y" >> "$DEFCONFIG_PATH"
+          
+          echo "已追加以下配置:"
+          echo "- CONFIG_TMPFS_POSIX_ACL=y"
+          echo "- CONFIG_TMPFS_XATTR=y"
+          echo "- CONFIG_DEBUG_INFO_BTF=y"
+          echo "- CONFIG_DEBUG_INFO_REDUCED=y"
+          
+          echo "=========================================="
+          echo "当前配置文件末尾内容:"
+          tail -10 "$DEFCONFIG_PATH"
+          echo "=========================================="
+
       - name: 配置构建环境 (禁用 MLGO，使用新版 Clang)
         run: |
           cd kernel_workspace
@@ -110,7 +144,7 @@ jobs:
       - name: 构建内核
         run: |
           cd kernel_workspace
-          BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
           echo "内核编译完成！"
 
       - name: 上传额外构建文件 (.config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list)
@@ -235,6 +269,12 @@ jobs:
             内核版本：${{ env.FULL_VERSION }}
             设备：${{ env.CPU }} / ${{ env.FEIL }}
             Android 版本：${{ env.ANDROID_VERSION }}
+            
+            ## 内核配置
+            - CONFIG_TMPFS_POSIX_ACL=y
+            - CONFIG_TMPFS_XATTR=y
+            - CONFIG_DEBUG_INFO_BTF=y
+            - CONFIG_DEBUG_INFO_REDUCED=y
           files: ./release_zips/*.zip
           draft: false
           prerelease: false
