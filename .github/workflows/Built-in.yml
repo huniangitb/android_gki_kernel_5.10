@@ -1,11 +1,10 @@
-name: cust-kernel-5.10
-
+name: kerne-cust
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
   FEIL: 'redmi+xiaomi'
   ANDROID_VERSION: 'android12'
-  KERNEL_VERSION: '5.10'
+  KERNEL_VERSION: '5.10.246'
   KERNEL_NAME: 'cust'
 
 on:
@@ -42,26 +41,6 @@ jobs:
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
           chmod a+x ~/repo
           sudo mv ~/repo /usr/local/bin/repo
-
-      # 添加 ccache 缓存
-      - name: 安装 ccache
-        run: sudo apt install -y ccache
-
-      - name: 配置 ccache
-        run: |
-          ccache --max-size=5G
-          echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
-          echo "CCACHE_COMPRESS=1" >> $GITHUB_ENV
-          echo "CCACHE_COMPRESSLEVEL=6" >> $GITHUB_ENV
-
-      - name: 恢复 ccache 缓存
-        uses: actions/cache@v3
-        with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ github.ref }}-${{ github.sha }}
-          restore-keys: |
-            ccache-${{ runner.os }}-${{ github.ref }}
-            ccache-${{ runner.os }}
 
       - name: 初始化源码仓库
         run: |
@@ -126,8 +105,6 @@ jobs:
           sed -i "s|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=$CLANG_REL_PATH|" common/build.config.common
           sed -i 's/check_defconfig//' ./common/build.config.gki
           echo "CC=clang" >> common/build.config.common
-          # 启用 ccache
-          echo "CC='ccache clang'" >> common/build.config.common
           echo "构建配置完成"
 
       - name: 构建内核
@@ -140,13 +117,12 @@ jobs:
       - name: 准备 ABI 工具环境
         run: |
           cd kernel_workspace
-          # dump_abi 和 diff_abi 位于 build/abi/ 目录下
-          chmod +x build/abi/dump_abi build/abi/diff_abi
-          # 将 build/abi 加入 PATH
+          # 将 kernel-build-tools 添加到 PATH（包含 dump_abi, diff_abi 等）
+          export PATH=$PWD/prebuilts/kernel-build-tools/linux-x86/bin:$PATH
           echo "$PWD/build/abi" >> $GITHUB_PATH
-          # 将 kernel-build-tools 加入 PATH（提供 abidiff 等依赖）
-          echo "$PWD/prebuilts/kernel-build-tools/linux-x86/bin" >> $GITHUB_PATH
-          echo "ABI 工具已准备"
+          echo "ABI 工具路径: $(which dump_abi 2>/dev/null || echo '未找到 dump_abi')"
+          # 确保 dump_abi 脚本可执行
+          chmod +x build/abi/dump_abi build/abi/diff_abi 2>/dev/null || true
 
       - name: 运行 ABI 检查 (不阻断编译流程)
         id: abi_check
@@ -160,8 +136,8 @@ jobs:
           REF_ABI="${KERNEL_SRC}/android/abi_gki_aarch64.xml"
           CUR_ABI="${DIST_DIR}/abi_current.xml"
           ABI_DIFF="${DIST_DIR}/abi_diff.txt"
-          KMI_SYMBOL_LIST="${KERNEL_SRC}/android/abi_gki_aarch64"  # 可选
-
+          KMI_SYMBOL_LIST="${KERNEL_SRC}/android/abi_gki_aarch64"  # 可选，如果没有符号列表文件可省略
+           
           echo "=========================================="
           echo "ABI 检查开始 (基于官方 dump_abi/diff_abi)"
           echo "参考 ABI: ${REF_ABI}"
@@ -180,8 +156,17 @@ jobs:
             exit 0
           fi
 
+          # 将 kernel-build-tools 加入 PATH (dump_abi 依赖)
+          export PATH=$PWD/prebuilts/kernel-build-tools/linux-x86/bin:$PATH
+          # 同时将当前目录的 build/abi 加入 PATH
+          export PATH=$PWD/common/build/abi:$PATH
+
           echo "生成当前内核的 ABI 表示 (dump_abi)..."
-          # 使用 PATH 中的 dump_abi（已在 PATH 中）
+          # 使用 dump_abi 生成当前内核的 ABI XML
+          # 参数说明：
+          #   --linux-tree: 内核输出目录（包含 vmlinux 和模块）
+          #   --out-file: 输出 ABI XML 文件
+          #   --kmi-symbol-list: 可选，限制只导出 KMI 符号（如果有符号列表文件）
           if [[ -f "${KMI_SYMBOL_LIST}" ]]; then
             dump_abi --linux-tree ${OUT_DIR} --out-file ${CUR_ABI} --kmi-symbol-list ${KMI_SYMBOL_LIST}
           else
@@ -195,6 +180,10 @@ jobs:
 
           echo "=========================================="
           echo "比较 ABI 差异 (diff_abi)..."
+          # 使用 diff_abi 比较参考 ABI 和当前 ABI
+          # --baseline: 参考 ABI
+          # --new: 新 ABI
+          # --report: 输出报告文件
           diff_abi --baseline ${REF_ABI} --new ${CUR_ABI} --report ${ABI_DIFF}
           DIFF_RET=$?
 
@@ -221,12 +210,6 @@ jobs:
           name: ABI_Diff_Report
           path: kernel_workspace/out/android12-5.10/dist/abi_diff.txt
         if: always() && steps.abi_check.outputs.abi_diff_exist == 'true'
-
-      - name: 保存 ccache 缓存
-        uses: actions/cache/save@v3
-        with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ github.ref }}-${{ github.sha }}
 
       - name: 克隆 AnyKernel3 并打包
         run: |
