@@ -113,72 +113,55 @@ jobs:
           BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
           echo "内核编译完成！"
 
-      # ========= 简化的 ABI 检查（使用 abidiff 直接比较） =========
-      - name: 运行 ABI 检查 (不阻断编译流程)
-        id: abi_check
-        continue-on-error: true
+      - name: 上传额外构建文件 (.config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list)
         run: |
           cd kernel_workspace
+          mkdir -p build_artifacts
           
-          # 定义路径
-          OUT_DIR=$(pwd)/out/android12-5.10/common
-          DIST_DIR=$(pwd)/out/android12-5.10/dist
-          VMLINUX="${OUT_DIR}/vmlinux"
-          REF_ABI=$(pwd)/common/android/abi_gki_aarch64.xml
-          ABI_DIFF="${DIST_DIR}/abi_diff.txt"
-          CUR_ABI_XML="${DIST_DIR}/abi_current.xml"
-          
-          echo "=========================================="
-          echo "ABI 检查开始"
-          echo "=========================================="
-          
-          # 检查必要文件
-          if [[ ! -f "${REF_ABI}" ]]; then
-            echo "⚠️ 跳过: 找不到参考 ABI 文件 ${REF_ABI}"
-            exit 0
-          fi
-          
-          if [[ ! -f "${VMLINUX}" ]]; then
-            echo "⚠️ 跳过: 找不到 vmlinux 文件"
-            exit 0
-          fi
-          
-          # 方法1: 如果参考文件是 XML 格式，尝试直接比较
-          echo "方法1: 尝试使用 abidiff 直接比较..."
-          
-          # 使用 abidiff 比较参考 XML 和当前内核
-          # --non-reachable-types: 忽略不可达类型
-          # --redundant: 显示冗余变更
-          abidiff --non-reachable-types --redundant "${REF_ABI}" "${VMLINUX}" > "${ABI_DIFF}" 2>&1
-          ABIDIFF_RET=$?
-          
-          if [[ ${ABIDIFF_RET} -eq 0 ]]; then
-            echo "✅ ABI 检查通过: 没有发现差异"
+          # 复制 .config
+          CONFIG_FILE="out/android12-5.10/common/.config"
+          if [[ -f "$CONFIG_FILE" ]]; then
+            cp "$CONFIG_FILE" build_artifacts/
+            echo "已复制 .config"
           else
-            echo "⚠️ ABI 检查发现差异 (返回码: ${ABIDIFF_RET})"
-            echo "差异内容:"
-            echo "-----"
-            cat "${ABI_DIFF}"
-            echo "-----"
+            echo "警告: 未找到 $CONFIG_FILE"
           fi
           
-          # 保存差异内容到输出变量
-          if [[ -s "${ABI_DIFF}" ]]; then
-            echo "abi_diff_exist=true" >> $GITHUB_OUTPUT
+          # 复制 Module.symvers
+          MODULE_SYMVERS="out/android12-5.10/common/Module.symvers"
+          if [[ -f "$MODULE_SYMVERS" ]]; then
+            cp "$MODULE_SYMVERS" build_artifacts/
+            echo "已复制 Module.symvers"
           else
-            echo "abi_diff_exist=false" >> $GITHUB_OUTPUT
+            echo "警告: 未找到 $MODULE_SYMVERS"
           fi
           
-          echo "=========================================="
-          echo "ABI 检查完成"
-          echo "=========================================="
+          # 复制 abi_symbollist.raw
+          ABI_SYMLIST="out/android12-5.10/common/abi_symbollist.raw"
+          if [[ -f "$ABI_SYMLIST" ]]; then
+            cp "$ABI_SYMLIST" build_artifacts/
+            echo "已复制 abi_symbollist.raw"
+          else
+            echo "警告: 未找到 $ABI_SYMLIST"
+          fi
+          
+          # 复制 compare_to_symbol_list
+          COMPARE_SCRIPT="build/abi/compare_to_symbol_list"
+          if [[ -f "$COMPARE_SCRIPT" ]]; then
+            cp "$COMPARE_SCRIPT" build_artifacts/
+            echo "已复制 compare_to_symbol_list"
+          else
+            echo "警告: 未找到 $COMPARE_SCRIPT"
+          fi
+          
+          echo "文件收集完成，内容："
+          ls -la build_artifacts/
 
-      - name: 上传 ABI 差异报告 (如果有)
+      - name: 上传构建工件
         uses: actions/upload-artifact@v4
         with:
-          name: ABI_Diff_Report
-          path: kernel_workspace/out/android12-5.10/dist/abi_diff.txt
-        if: always() && steps.abi_check.outputs.abi_diff_exist == 'true'
+          name: Kernel_Build_Artifacts
+          path: kernel_workspace/build_artifacts/
 
       - name: 克隆 AnyKernel3 并打包
         run: |
