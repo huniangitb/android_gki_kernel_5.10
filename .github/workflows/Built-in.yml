@@ -1,4 +1,4 @@
-name: ShirokoNekoKernel-xaga
+name: cust-kernel-5.10
 
 env:
   TZ: Asia/Shanghai
@@ -140,10 +140,12 @@ jobs:
       - name: 准备 ABI 工具环境
         run: |
           cd kernel_workspace
-          # 确保 dump_abi 和 diff_abi 脚本可执行
-          chmod +x common/build/abi/dump_abi common/build/abi/diff_abi
-          # 将 kernel-build-tools 添加到 PATH（用于 abidiff 等依赖）
-          export PATH=$PWD/prebuilts/kernel-build-tools/linux-x86/bin:$PATH
+          # dump_abi 和 diff_abi 位于 build/abi/ 目录下
+          chmod +x build/abi/dump_abi build/abi/diff_abi
+          # 将 build/abi 加入 PATH
+          echo "$PWD/build/abi" >> $GITHUB_PATH
+          # 将 kernel-build-tools 加入 PATH（提供 abidiff 等依赖）
+          echo "$PWD/prebuilts/kernel-build-tools/linux-x86/bin" >> $GITHUB_PATH
           echo "ABI 工具已准备"
 
       - name: 运行 ABI 检查 (不阻断编译流程)
@@ -178,17 +180,12 @@ jobs:
             exit 0
           fi
 
-          # 将 kernel-build-tools 加入 PATH (abidiff 依赖)
-          export PATH=$PWD/prebuilts/kernel-build-tools/linux-x86/bin:$PATH
-          # 将当前目录的 build/abi 加入 PATH
-          export PATH=$PWD/common/build/abi:$PATH
-
           echo "生成当前内核的 ABI 表示 (dump_abi)..."
-          # 使用绝对路径调用 dump_abi
+          # 使用 PATH 中的 dump_abi（已在 PATH 中）
           if [[ -f "${KMI_SYMBOL_LIST}" ]]; then
-            common/build/abi/dump_abi --linux-tree ${OUT_DIR} --out-file ${CUR_ABI} --kmi-symbol-list ${KMI_SYMBOL_LIST}
+            dump_abi --linux-tree ${OUT_DIR} --out-file ${CUR_ABI} --kmi-symbol-list ${KMI_SYMBOL_LIST}
           else
-            common/build/abi/dump_abi --linux-tree ${OUT_DIR} --out-file ${CUR_ABI}
+            dump_abi --linux-tree ${OUT_DIR} --out-file ${CUR_ABI}
           fi
 
           if [[ ! -f "${CUR_ABI}" ]]; then
@@ -198,8 +195,7 @@ jobs:
 
           echo "=========================================="
           echo "比较 ABI 差异 (diff_abi)..."
-          # 使用绝对路径调用 diff_abi
-          common/build/abi/diff_abi --baseline ${REF_ABI} --new ${CUR_ABI} --report ${ABI_DIFF}
+          diff_abi --baseline ${REF_ABI} --new ${CUR_ABI} --report ${ABI_DIFF}
           DIFF_RET=$?
 
           if [[ ${DIFF_RET} -eq 0 ]]; then
