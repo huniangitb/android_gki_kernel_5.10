@@ -35,7 +35,7 @@ jobs:
       - name: 安装基础依赖
         run: |
           sudo apt update
-          sudo apt install -y clang curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev
+          sudo apt install -y ccache curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev
 
       - name: 安装 repo 工具
         run: |
@@ -173,7 +173,7 @@ jobs:
           clang --version
           echo "=========================================="
           echo "开始编译内核..."
-          
+          export LTO=thin
           BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
           
           echo "内核编译完成！"
