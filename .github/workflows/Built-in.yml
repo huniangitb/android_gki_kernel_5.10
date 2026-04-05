@@ -113,95 +113,65 @@ jobs:
           BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
           echo "内核编译完成！"
 
-      # ========= 基于官方工具的 ABI 检查（修复版） =========
-      - name: 准备 ABI 工具环境
-        run: |
-          cd kernel_workspace
-          # 添加 prebuilts 中的二进制工具（abidiff 等）
-          PREBUILT_PATH=$PWD/prebuilts/kernel-build-tools/linux-x86/bin
-          # 添加 build/abi 脚本目录
-          ABI_SCRIPT_PATH=$PWD/build/abi
-          # 将路径添加到 $GITHUB_PATH 以便后续步骤使用
-          echo "$PREBUILT_PATH" >> $GITHUB_PATH
-          echo "$ABI_SCRIPT_PATH" >> $GITHUB_PATH
-          # 同时立即生效
-          export PATH="$PREBUILT_PATH:$ABI_SCRIPT_PATH:$PATH"
-          echo "ABI 工具检查:"
-          which dump_abi && dump_abi --help | head -1 || echo "警告: dump_abi 未找到"
-          which diff_abi && diff_abi --help | head -1 || echo "警告: diff_abi 未找到"
-          # 确保脚本可执行
-          chmod +x build/abi/dump_abi build/abi/diff_abi 2>/dev/null || true
-
+      # ========= 简化的 ABI 检查（使用 abidiff 直接比较） =========
       - name: 运行 ABI 检查 (不阻断编译流程)
         id: abi_check
         continue-on-error: true
         run: |
           cd kernel_workspace
+          
           # 定义路径
-          KERNEL_SRC=$(pwd)/common
           OUT_DIR=$(pwd)/out/android12-5.10/common
           DIST_DIR=$(pwd)/out/android12-5.10/dist
-          REF_ABI="${KERNEL_SRC}/android/abi_gki_aarch64.xml"
-          CUR_ABI="${DIST_DIR}/abi_current.xml"
+          VMLINUX="${OUT_DIR}/vmlinux"
+          REF_ABI=$(pwd)/common/android/abi_gki_aarch64.xml
           ABI_DIFF="${DIST_DIR}/abi_diff.txt"
-
+          CUR_ABI_XML="${DIST_DIR}/abi_current.xml"
+          
           echo "=========================================="
-          echo "ABI 检查开始 (基于官方 dump_abi/diff_abi)"
-          echo "参考 ABI: ${REF_ABI}"
-          echo "内核输出目录: ${OUT_DIR}"
+          echo "ABI 检查开始"
           echo "=========================================="
-
-          # 检查参考文件是否存在
+          
+          # 检查必要文件
           if [[ ! -f "${REF_ABI}" ]]; then
-            echo "⚠️ 跳过 ABI 检查: 找不到参考文件 ${REF_ABI}"
+            echo "⚠️ 跳过: 找不到参考 ABI 文件 ${REF_ABI}"
             exit 0
           fi
-
-          # 检查 vmlinux 是否存在
-          if [[ ! -f "${OUT_DIR}/vmlinux" ]]; then
-            echo "⚠️ 跳过 ABI 检查: 找不到 vmlinux，可能编译失败"
+          
+          if [[ ! -f "${VMLINUX}" ]]; then
+            echo "⚠️ 跳过: 找不到 vmlinux 文件"
             exit 0
           fi
-
-          # 使用绝对路径调用 dump_abi（避免 PATH 问题）
-          DUMP_ABI=$(pwd)/build/abi/dump_abi
-          DIFF_ABI=$(pwd)/build/abi/diff_abi
-
-          if [[ ! -x "${DUMP_ABI}" ]]; then
-            echo "⚠️ 跳过 ABI 检查: dump_abi 脚本不可执行"
-            exit 0
-          fi
-
-          echo "生成当前内核的 ABI 表示 (dump_abi)..."
-          # 不指定 --kmi-symbol-list，进行完整 ABI 比较
-          ${DUMP_ABI} --linux-tree ${OUT_DIR} --out-file ${CUR_ABI}
-
-          if [[ ! -f "${CUR_ABI}" ]]; then
-            echo "⚠️ 生成当前 ABI 失败，跳过检查"
-            exit 0
-          fi
-
-          echo "=========================================="
-          echo "比较 ABI 差异 (diff_abi)..."
-          ${DIFF_ABI} --baseline ${REF_ABI} --new ${CUR_ABI} --report ${ABI_DIFF}
-          DIFF_RET=$?
-
-          if [[ ${DIFF_RET} -eq 0 ]]; then
+          
+          # 方法1: 如果参考文件是 XML 格式，尝试直接比较
+          echo "方法1: 尝试使用 abidiff 直接比较..."
+          
+          # 使用 abidiff 比较参考 XML 和当前内核
+          # --non-reachable-types: 忽略不可达类型
+          # --redundant: 显示冗余变更
+          abidiff --non-reachable-types --redundant "${REF_ABI}" "${VMLINUX}" > "${ABI_DIFF}" 2>&1
+          ABIDIFF_RET=$?
+          
+          if [[ ${ABIDIFF_RET} -eq 0 ]]; then
             echo "✅ ABI 检查通过: 没有发现差异"
           else
-            echo "⚠️ ABI 检查发现差异 (返回码: ${DIFF_RET})"
-            echo "差异报告已保存到: ${ABI_DIFF}"
-            echo "----- 差异内容 -----"
-            cat ${ABI_DIFF}
-            echo "-------------------"
+            echo "⚠️ ABI 检查发现差异 (返回码: ${ABIDIFF_RET})"
+            echo "差异内容:"
+            echo "-----"
+            cat "${ABI_DIFF}"
+            echo "-----"
           fi
-
-          # 设置输出变量供后续步骤使用
-          if [[ -s ${ABI_DIFF} ]]; then
+          
+          # 保存差异内容到输出变量
+          if [[ -s "${ABI_DIFF}" ]]; then
             echo "abi_diff_exist=true" >> $GITHUB_OUTPUT
           else
             echo "abi_diff_exist=false" >> $GITHUB_OUTPUT
           fi
+          
+          echo "=========================================="
+          echo "ABI 检查完成"
+          echo "=========================================="
 
       - name: 上传 ABI 差异报告 (如果有)
         uses: actions/upload-artifact@v4
