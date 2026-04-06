@@ -139,9 +139,9 @@ jobs:
           cd kernel_workspace
           # 修复 PATH 确保 dd 可用
           export PATH="/usr/bin:$PATH"
-          export KBUILD_VERBOSE=0
+          set -o pipefail
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
-            grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|Unknown option|DW_TAG_label|" || true
+            grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|Unknown option|DW_TAG_label|" 
           echo "内核编译完成！"
 
       - name: 上传额外构建文件 (config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list)
