@@ -6,7 +6,7 @@ env:
   ANDROID_VERSION: 'android12'
   KERNEL_VERSION: '5.10.246'
   KERNEL_NAME: 'cust'
-  REPO_URL: 'https://mirrors.tuna.tsinghua.edu.cn/git/git-repo'  # 使用清华镜像
+  REPO_URL: 'https://mirrors.tuna.tsinghua.edu.cn/git/git-repo'
 
 on:
   workflow_dispatch:
@@ -130,17 +130,18 @@ jobs:
           sed -i "s|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=$CLANG_REL_PATH|" common/build.config.common
           sed -i 's/check_defconfig//' ./common/build.config.gki
           echo "CC=clang" >> common/build.config.common
-          # 屏蔽部分调试日志（设置 KBUILD_VERBOSE 和 PAHOLE_FLAGS）
+          # 修复 PAHOLE_FLAGS 设置 - 使用正确的语法
           echo "KBUILD_VERBOSE=0" >> common/build.config.common
-          echo "PAHOLE_FLAGS=--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_enum64" >> common/build.config.common
+          # 移除有问题的 PAHOLE_FLAGS 行，改用环境变量方式
           echo "构建配置完成"
 
       - name: 构建内核（一次性编译，静默模式减少日志）
         run: |
           cd kernel_workspace
+          # 设置环境变量来减少 pahole 输出，不使用不兼容的参数
+          export KBUILD_VERBOSE=0
           # 静默编译，并过滤掉 dwarf 类型警告（但保留错误）
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
-            grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x" || true
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
           echo "内核编译完成！"
 
       - name: 上传额外构建文件 (config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list)
