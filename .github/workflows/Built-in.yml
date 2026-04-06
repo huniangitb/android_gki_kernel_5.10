@@ -31,33 +31,22 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
-      - name: 安装基础依赖（包含 coreutils 解决 dd 缺失）
+      - name: 安装基础依赖
         run: |
           sudo apt update
-          sudo apt install -y clang curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
-
-      - name: 安装 repo 工具（使用 GitHub 镜像）
+          sudo apt install -y clang curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools
+      - name: 安装 repo 工具
         run: |
-          # 使用 GitHub 上的 repo 镜像
-          curl -s https://raw.githubusercontent.com/GerritCodeReview/git-repo/main/repo > ~/repo
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
           chmod a+x ~/repo
           sudo mv ~/repo /usr/local/bin/repo
-          
-          # 配置 repo 使用 GitHub 镜像源
-          git config --global url."https://github.com/".insteadOf "https://gerrit.googlesource.com/"
-          git config --global url."https://android.googlesource.com/".insteadOf "https://gerrit.googlesource.com/"
-
-      - name: 初始化源码仓库（使用镜像）
+      - name: 初始化源码仓库
         run: |
           rm -rf kernel_workspace && mkdir kernel_workspace && cd kernel_workspace
-          # 使用 --repo-url 指定 GitHub 镜像
-          repo init --depth 1 \
-            --repo-url https://github.com/GerritCodeReview/git-repo \
-            -u https://android.googlesource.com/kernel/manifest \
-            -b common-android12-5.10
+          repo init --depth 1 -u https://android.googlesource.com/kernel/manifest -b common-android12-5.10
           repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle --force-sync
           rm -rf common
-          echo "正在克隆源码仓库 (分支: android12-5.10-2025-09)..."
+          echo "正在克隆源码仓库..."
           git clone --depth=1 https://github.com/ztc1997/android_gki_kernel_5.10_common common -b android12-5.10-2025-09
           echo "正在去除 ABI 保护 & 去除 dirty 后缀..."
           rm common/android/abi_gki_protected_exports_* || echo "不需要去除保护"
@@ -65,36 +54,15 @@ jobs:
             sed -i 's/ -dirty//g' "$f"
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
-
-      - name: 直接修改 gki_defconfig（添加/移除配置）
-        run: |
-          cd kernel_workspace
-          DEFCONFIG_PATH="common/arch/arm64/configs/gki_defconfig"
-          echo "===== 修改前配置关键项 ====="
-          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_DEBUG_INFO_BTF|CONFIG_KASAN" "$DEFCONFIG_PATH" || echo "未找到相关项"
-          
-          # 启用所需配置
-          echo -e "\n# Custom additions for BPF and tmpfs features" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG_PATH"
-          
-          # 禁用 KASAN
-          sed -i 's/^CONFIG_KASAN=y/# CONFIG_KASAN is not set/' "$DEFCONFIG_PATH"
-          
-          echo "===== 修改后配置关键项 ====="
-          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_DEBUG_INFO_BTF|CONFIG_KASAN" "$DEFCONFIG_PATH"
-
       - name: 下载并安装自定义 Clang (r584948b)
         run: |
           cd kernel_workspace
-          echo "正在从 GitHub 下载 Clang r584948b..."
-          wget -q -c --show-progress --timeout=30 --tries=30 https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz -O clang-r584948b.tar.gz
+          echo "正在下载 Clang r584948b..."
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r584948b.tar.gz -O clang-r584948b.tar.gz
           echo "正在解压 Clang..."
           mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
           tar -xzf clang-r584948b.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
           echo "Clang 安装完成，路径: $(pwd)/prebuilts-master/clang/host/linux-x86/clang-r584948b"
-
       - name: 打印 Clang 工具链详细信息
         run: |
           cd kernel_workspace
@@ -110,7 +78,6 @@ jobs:
             echo "错误: 找不到 Clang 编译器！"
             exit 1
           fi
-
       - name: 添加内核名称后缀
         run: |
           cd kernel_workspace
@@ -124,8 +91,40 @@ jobs:
           for f in ./common/scripts/setlocalversion; do
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
-
-      - name: 配置构建环境 (禁用 MLGO，使用新版 Clang，减少调试输出)
+      - name: 追加内核编译配置
+        run: |
+          cd kernel_workspace
+          DEFCONFIG_PATH="common/arch/arm64/configs/gki_defconfig"
+          
+          echo "=========================================="
+          echo "正在追加内核配置到 $DEFCONFIG_PATH"
+          echo "=========================================="
+          
+          # 检查配置文件是否存在
+          if [[ ! -f "$DEFCONFIG_PATH" ]]; then
+            echo "错误: 找不到 $DEFCONFIG_PATH"
+            exit 1
+          fi
+          
+          # 追加配置（如果配置已存在则跳过）
+          echo "" >> "$DEFCONFIG_PATH"
+          echo "# Custom configurations" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_DEBUG_INFO_REDUCED=y" >> "$DEFCONFIG_PATH"
+          
+          echo "已追加以下配置:"
+          echo "- CONFIG_TMPFS_POSIX_ACL=y"
+          echo "- CONFIG_TMPFS_XATTR=y"
+          echo "- CONFIG_DEBUG_INFO_BTF=y"
+          echo "- CONFIG_DEBUG_INFO_REDUCED=y"
+          
+          echo "=========================================="
+          echo "当前配置文件末尾内容:"
+          tail -10 "$DEFCONFIG_PATH"
+          echo "=========================================="
+      - name: 配置构建环境 (禁用 MLGO，使用新版 Clang)
         run: |
           cd kernel_workspace
           sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
@@ -133,30 +132,22 @@ jobs:
           sed -i "s|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=$CLANG_REL_PATH|" common/build.config.common
           sed -i 's/check_defconfig//' ./common/build.config.gki
           echo "CC=clang" >> common/build.config.common
-          # 屏蔽部分调试日志（设置 KBUILD_VERBOSE 和 PAHOLE_FLAGS）
-          echo "KBUILD_VERBOSE=0" >> common/build.config.common
-          echo "PAHOLE_FLAGS=--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_enum64" >> common/build.config.common
           echo "构建配置完成"
-
-      - name: 构建内核（一次性编译，静默模式减少日志）
+      - name: 构建内核
         run: |
           cd kernel_workspace
-          # 静默编译，并过滤掉 dwarf 类型警告（但保留错误）
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
-            grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x" || true
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
           echo "内核编译完成！"
-
-      - name: 上传额外构建文件 (config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list)
+      - name: 上传额外构建文件 (.config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list)
         run: |
           cd kernel_workspace
           mkdir -p build_artifacts
           
-          # 复制并重命名 .config 为 config
+          # 复制 .config
           CONFIG_FILE="out/android12-5.10/common/.config"
           if [[ -f "$CONFIG_FILE" ]]; then
-            cp "$CONFIG_FILE" build_artifacts/config
-            echo "已复制并重命名 .config -> config"
-            cp "$CONFIG_FILE" "build_artifacts/config_$(date +'%Y%m%d_%H%M%S').txt"
+            cp "$CONFIG_FILE" build_artifacts/
+            echo "已复制 .config"
           else
             echo "警告: 未找到 $CONFIG_FILE"
           fi
@@ -190,7 +181,6 @@ jobs:
           
           echo "文件收集完成，内容："
           ls -la build_artifacts/
-
       - name: 上传构建工件
         uses: actions/upload-artifact@v4
         with:
@@ -215,7 +205,6 @@ jobs:
           ZIPNAME="AnyKernel3_${{ env.KERNEL_VERSION }}.zip"
           zip -r "../$ZIPNAME" ./*
           echo "打包完成: $ZIPNAME"
-
       - name: 上传 ZIP 工件
         uses: actions/upload-artifact@v4
         with:
@@ -258,7 +247,6 @@ jobs:
           echo "TIME=${TIME}" >> $GITHUB_ENV
           echo "TIME_FORM=${TIME_FORM}" >> $GITHUB_ENV
           echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
-
       - name: 创建 GitHub Release 并上传内核包
         uses: softprops/action-gh-release@v2
         with:
@@ -269,6 +257,12 @@ jobs:
             内核版本：${{ env.FULL_VERSION }}
             设备：${{ env.CPU }} / ${{ env.FEIL }}
             Android 版本：${{ env.ANDROID_VERSION }}
+            
+            ## 内核配置
+            - CONFIG_TMPFS_POSIX_ACL=y
+            - CONFIG_TMPFS_XATTR=y
+            - CONFIG_DEBUG_INFO_BTF=y
+            - CONFIG_DEBUG_INFO_REDUCED=y
           files: ./release_zips/*.zip
           draft: false
           prerelease: false
