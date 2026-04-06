@@ -80,7 +80,7 @@ jobs:
         run: |
           cd kernel_workspace
           echo "正在下载 Clang r584948b..."
-          wget -q --show-progress --timeout=30 --tries=3 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r584948b.tar.gz -O clang-r584948b.tar.gz
+          wget -q -c --show-progress --timeout=30 --tries=30 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r584948b.tar.gz -O clang-r584948b.tar.gz
           echo "正在解压 Clang..."
           mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
           tar -xzf clang-r584948b.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
