@@ -118,13 +118,11 @@ jobs:
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_DEBUG_INFO_REDUCED=y" >> "$DEFCONFIG_PATH"
           
           echo "已追加以下配置:"
           echo "- CONFIG_TMPFS_POSIX_ACL=y"
           echo "- CONFIG_TMPFS_XATTR=y"
           echo "- CONFIG_DEBUG_INFO_BTF=y"
-          echo "- CONFIG_DEBUG_INFO_REDUCED=y"
           
           echo "=========================================="
           echo "当前配置文件末尾内容:"
@@ -275,7 +273,6 @@ jobs:
             - CONFIG_TMPFS_POSIX_ACL=y
             - CONFIG_TMPFS_XATTR=y
             - CONFIG_DEBUG_INFO_BTF=y
-            - CONFIG_DEBUG_INFO_REDUCED=y
           files: ./release_zips/*.zip
           draft: false
           prerelease: false
