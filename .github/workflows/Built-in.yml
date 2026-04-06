@@ -130,7 +130,7 @@ jobs:
           LINK_VMLINUX="common/scripts/link-vmlinux.sh"
           if [[ -f "$LINK_VMLINUX" ]]; then
           # 将 '| dd of=' 替换为 '| /usr/bin/dd of='
-           sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
+          sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
           echo "构建配置完成"
 
       - name: 构建内核（静默模式，过滤刷屏警告）
