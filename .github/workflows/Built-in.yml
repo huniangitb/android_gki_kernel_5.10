@@ -35,8 +35,9 @@ jobs:
       - name: 安装基础依赖（包含 coreutils 解决 dd 缺失）
         run: |
           sudo apt update
-          sudo apt install -y clang curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
-          # 确保 dd 可用
+          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
+          # 确保 dd 可
+          which dd
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
 
       - name: 安装 repo 工具（使用清华镜像）
