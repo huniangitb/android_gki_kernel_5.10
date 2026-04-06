@@ -76,15 +76,45 @@ jobs:
           echo "===== 修改后配置关键项 ====="
           grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_DEBUG_INFO_BTF|CONFIG_KASAN" "$DEFCONFIG_PATH"
 
-      - name: 下载并安装自定义 Clang (r584948b)
+      - name: 使用 repo 下载自定义 Clang (r584948b)
         run: |
           cd kernel_workspace
-          echo "正在下载 Clang r584948b..."
-          wget -q -c --show-progress --timeout=30 --tries=30 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r584948b.tar.gz -O clang-r584948b.tar.gz
-          echo "正在解压 Clang..."
-          mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
-          tar -xzf clang-r584948b.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
-          echo "Clang 安装完成，路径: $(pwd)/prebuilts-master/clang/host/linux-x86/clang-r584948b"
+          echo "正在使用 repo 下载 Clang r584948b..."
+          
+          # 创建 manifest 文件
+          cat > clang_manifest.xml << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <remote name="aosp" fetch="https://android.googlesource.com/" />
+            <project name="platform/prebuilts/clang/host/linux-x86" 
+                     path="prebuilts/clang/host/linux-x86"
+                     revision="main-kernel" 
+                     clone-depth="1" />
+          </manifest>
+          EOF
+          
+          # 使用 repo 初始化并同步
+          mkdir -p clang_workspace
+          cd clang_workspace
+          repo init --depth 1 -u file://../clang_manifest.xml
+          repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle
+          
+          # 查找并复制 r584948b 版本
+          cd ..
+          CLANG_SOURCE=$(find clang_workspace -type d -name "clang-r584948b" | head -n1)
+          
+          if [[ -n "$CLANG_SOURCE" ]]; then
+            mkdir -p prebuilts-master/clang/host/linux-x86/
+            cp -r "$CLANG_SOURCE" prebuilts-master/clang/host/linux-x86/clang-r584948b
+            echo "成功使用 repo 下载 Clang: $CLANG_SOURCE"
+          else
+            echo "错误: repo 下载后未找到 clang-r584948b，尝试列出可用版本..."
+            find clang_workspace -type d -name "clang-*" | head -10
+            exit 1
+          fi
+          
+          # 清理临时目录
+          rm -rf clang_workspace
 
       - name: 打印 Clang 工具链详细信息
         run: |
