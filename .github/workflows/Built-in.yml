@@ -4,7 +4,7 @@ env:
   CPU: 'mt6895'
   FEIL: 'redmi+xiaomi'
   ANDROID_VERSION: 'android12'
-  KERNEL_VERSION: '5.10.246'
+  KERNEL_VERSION: '5.10.240'
   KERNEL_NAME: 'cust'
 
 on:
@@ -97,13 +97,13 @@ jobs:
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
 
-      - name: 追加内核编译配置
+      - name: 修改内核编译配置（删除 KASAN 并追加自定义配置）
         run: |
           cd kernel_workspace
           DEFCONFIG_PATH="common/arch/arm64/configs/gki_defconfig"
           
           echo "=========================================="
-          echo "正在追加内核配置到 $DEFCONFIG_PATH"
+          echo "正在修改内核配置: $DEFCONFIG_PATH"
           echo "=========================================="
           
           # 检查配置文件是否存在
@@ -112,13 +112,19 @@ jobs:
             exit 1
           fi
           
-          # 追加配置（如果配置已存在则跳过）
+          # 删除 CONFIG_KASAN 相关配置
+          echo "正在删除 CONFIG_KASAN 配置..."
+          sed -i '/CONFIG_KASAN/d' "$DEFCONFIG_PATH"
+          sed -i '/CONFIG_KASAN_/d' "$DEFCONFIG_PATH"
+          
+          # 追加自定义配置
           echo "" >> "$DEFCONFIG_PATH"
           echo "# Custom configurations" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG_PATH"
           
+          echo "已删除: CONFIG_KASAN 及所有相关配置"
           echo "已追加以下配置:"
           echo "- CONFIG_TMPFS_POSIX_ACL=y"
           echo "- CONFIG_TMPFS_XATTR=y"
@@ -126,7 +132,7 @@ jobs:
           
           echo "=========================================="
           echo "当前配置文件末尾内容:"
-          tail -10 "$DEFCONFIG_PATH"
+          tail -15 "$DEFCONFIG_PATH"
           echo "=========================================="
 
       - name: 配置构建环境 (禁用 MLGO，使用新版 Clang)
@@ -270,6 +276,7 @@ jobs:
             Android 版本：${{ env.ANDROID_VERSION }}
             
             ## 内核配置
+            - 已禁用 KASAN
             - CONFIG_TMPFS_POSIX_ACL=y
             - CONFIG_TMPFS_XATTR=y
             - CONFIG_DEBUG_INFO_BTF=y
