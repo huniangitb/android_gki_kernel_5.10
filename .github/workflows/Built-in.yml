@@ -1,4 +1,4 @@
-name: kernel-cust
+name: kerne-cust
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
@@ -67,17 +67,16 @@ jobs:
           cd kernel_workspace
           DEFCONFIG_PATH="common/arch/arm64/configs/gki_defconfig"
           echo "===== 修改前配置关键项 ====="
-          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_DEBUG_INFO_BTF|CONFIG_KASAN" "$DEFCONFIG_PATH" || echo "未找到相关项"
+          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_KASAN" "$DEFCONFIG_PATH" || echo "未找到相关项"
           
-          echo -e "\n# Custom additions for BPF and tmpfs features" >> "$DEFCONFIG_PATH"
+          echo -e "\n# Custom additions for tmpfs features" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG_PATH"
           
           sed -i 's/^CONFIG_KASAN=y/# CONFIG_KASAN is not set/' "$DEFCONFIG_PATH"
           
           echo "===== 修改后配置关键项 ====="
-          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_DEBUG_INFO_BTF|CONFIG_KASAN" "$DEFCONFIG_PATH"
+          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_KASAN" "$DEFCONFIG_PATH"
 
       - name: 下载并安装自定义 Clang (r584948b)
         run: |
@@ -137,11 +136,11 @@ jobs:
       - name: 构建内核（静默模式，过滤刷屏警告）
         run: |
           cd kernel_workspace
-          # 修复 PATH 确保 dd 可用
+          
           export PATH="/usr/bin:$PATH"
-          set -o pipefail
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
-            grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|Unknown option|DW_TAG_label" 
+          export KBUILD_VERBOSE=0
+          
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
           echo "内核编译完成！"
 
       - name: 上传额外构建文件 (config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list)
