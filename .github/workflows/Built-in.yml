@@ -36,6 +36,8 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y clang curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
+          # 确保 dd 可用
+          sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
 
       - name: 安装 repo 工具（使用清华镜像）
         run: |
@@ -43,7 +45,6 @@ jobs:
           chmod a+x ~/repo
           sudo mv ~/repo /usr/local/bin/repo
           git config --global repo.url https://mirrors.tuna.tsinghua.edu.cn/git/git-repo
-          echo "Repo 工具安装完成"
 
       - name: 初始化源码仓库（使用清华 AOSP 镜像）
         run: |
@@ -85,7 +86,6 @@ jobs:
           echo "正在解压 Clang..."
           mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
           tar -xzf clang-r584948b.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
-          echo "Clang 安装完成"
 
       - name: 打印 Clang 工具链详细信息
         run: |
@@ -128,24 +128,11 @@ jobs:
           echo "KBUILD_VERBOSE=0" >> common/build.config.common
           echo "构建配置完成"
 
-      - name: 修补 link-vmlinux.sh 添加 --skip_encoding_btf_enum64
-        run: |
-          cd kernel_workspace
-          LINK_VMLINUX="common/scripts/link-vmlinux.sh"
-          if [[ -f "$LINK_VMLINUX" ]]; then
-            # 备份原文件
-            cp "$LINK_VMLINUX" "$LINK_VMLINUX.bak"
-            # 在调用 pahole 的行中添加 --skip_encoding_btf_enum64
-            # 原行类似: LLVM_OBJCOPY="${OBJCOPY}" ${PAHOLE} -J ${PAHOLE_FLAGS} ${1}
-            sed -i 's/${PAHOLE} -J ${PAHOLE_FLAGS}/${PAHOLE} -J --skip_encoding_btf_enum64 ${PAHOLE_FLAGS}/' "$LINK_VMLINUX"
-            echo "已修补 $LINK_VMLINUX，添加 --skip_encoding_btf_enum64"
-          else
-            echo "警告: 未找到 $LINK_VMLINUX，跳过修补"
-          fi
-
       - name: 构建内核（静默模式，过滤刷屏警告）
         run: |
           cd kernel_workspace
+          # 修复 PATH 确保 dd 可用
+          export PATH="/usr/bin:$PATH"
           export KBUILD_VERBOSE=0
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|Unknown option" || true
