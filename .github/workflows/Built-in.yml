@@ -36,16 +36,25 @@ jobs:
           sudo apt update
           sudo apt install -y clang curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
 
-      - name: 安装 repo 工具
+      - name: 安装 repo 工具（使用 GitHub 镜像）
         run: |
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
+          # 使用 GitHub 上的 repo 镜像
+          curl -s https://raw.githubusercontent.com/GerritCodeReview/git-repo/main/repo > ~/repo
           chmod a+x ~/repo
           sudo mv ~/repo /usr/local/bin/repo
+          
+          # 配置 repo 使用 GitHub 镜像源
+          git config --global url."https://github.com/".insteadOf "https://gerrit.googlesource.com/"
+          git config --global url."https://android.googlesource.com/".insteadOf "https://gerrit.googlesource.com/"
 
-      - name: 初始化源码仓库
+      - name: 初始化源码仓库（使用镜像）
         run: |
           rm -rf kernel_workspace && mkdir kernel_workspace && cd kernel_workspace
-          repo init --depth 1 -u https://android.googlesource.com/kernel/manifest -b common-android12-5.10
+          # 使用 --repo-url 指定 GitHub 镜像
+          repo init --depth 1 \
+            --repo-url https://github.com/GerritCodeReview/git-repo \
+            -u https://android.googlesource.com/kernel/manifest \
+            -b common-android12-5.10
           repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle --force-sync
           rm -rf common
           echo "正在克隆源码仓库 (分支: android12-5.10-2025-09)..."
