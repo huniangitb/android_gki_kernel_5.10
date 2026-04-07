@@ -73,7 +73,7 @@ jobs:
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
           
-          sed -i 's/^CONFIG_KASAN=y/# CONFIG_KASAN is not set/' "$DEFCONFIG_PATH"
+          #sed -i 's/^CONFIG_KASAN=y/# CONFIG_KASAN is not set/' "$DEFCONFIG_PATH"
           
           echo "===== 修改后配置关键项 ====="
           grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_KASAN" "$DEFCONFIG_PATH"
