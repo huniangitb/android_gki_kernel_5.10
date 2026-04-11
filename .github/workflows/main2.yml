@@ -1,4 +1,4 @@
-′name: kerne-cust2
+name: kerne-cust2
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
