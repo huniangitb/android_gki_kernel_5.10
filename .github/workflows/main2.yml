@@ -46,7 +46,7 @@ jobs:
           git clone --recursive --branch v1.23 --depth 1 https://git.kernel.org/pub/scm/devel/pahole/pahole.git
           cd pahole
           mkdir build && cd build
-          cmake -DCMAKE_INSTALL_PREFIX=/usr/local ..
+          cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INSTALL_LIBDIR=lib ..
           make -j$(nproc)
           sudo make install
           # 验证安装
