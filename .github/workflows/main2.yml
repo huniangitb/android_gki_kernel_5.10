@@ -1,4 +1,4 @@
-name: kerne-cust2
+′name: kerne-cust2
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
@@ -51,7 +51,7 @@ jobs:
           sudo ldconfig
           # 验证库文件位置
           echo "库文件列表："
-          ls -la usr/local/lib/libdwarves*.so || echo "未找到库文件，检查 /usr/local/"
+          ls -la /usr/local/lib/libdwarves*.so || echo "未找到库文件，检查 /usr/local/"
           ls -la /usr/local/libdwarves* 2>/dev/null || true
           /usr/local/bin/pahole --version
 
