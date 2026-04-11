@@ -164,10 +164,9 @@ jobs:
           if [[ -f "$LINK_VMLINUX" ]]; then
             sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
           fi
-          # 指定使用编译的 pahole
+          # 指定使用编译的 pahole，但不再写入 PAHOLE_FLAGS 以避免 shell 解析错误
           echo "PAHOLE=/usr/local/bin/pahole" >> common/build.config.common
-          # 可选：添加跳过参数
-          echo "PAHOLE_FLAGS=--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars" >> common/build.config.common
+          # 注意：PAHOLE_FLAGS 将在构建步骤中通过环境变量传递，不写入配置文件
 
       - name: 构建内核
         run: |
@@ -175,6 +174,9 @@ jobs:
           export PATH="/usr/local/bin:$PATH"
           export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
           export KBUILD_VERBOSE=0
+          # 通过环境变量传递 PAHOLE_FLAGS（不会被 shell 解析为命令）
+          export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
+          echo "使用的 PAHOLE_FLAGS: ${PAHOLE_FLAGS}"
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
             { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
