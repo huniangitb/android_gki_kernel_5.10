@@ -44,10 +44,10 @@ jobs:
         run: |
           # 下载旧版 pahole deb 包
           wget http://archive.ubuntu.com/ubuntu/pool/universe/d/dwarves/pahole_1.22-8_amd64.deb
-          # 强制安装（覆盖已有的 pahole）
-          sudo dpkg -i --force-overwrite pahole_1.22-8_amd64.deb
-          # 如果依赖有问题，修复一下
-          sudo apt-get install -f -y
+          # 安装依赖 libbpf0（Ubuntu 24.04 中存在）
+          sudo apt install -y libbpf0
+          # 使用 apt 安装本地 deb，自动处理依赖
+          sudo apt install -y ./pahole_1.22-8_amd64.deb
           # 验证版本
           echo "Installed pahole version:"
           pahole --version
