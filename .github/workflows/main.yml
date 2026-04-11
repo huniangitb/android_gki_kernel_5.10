@@ -44,11 +44,10 @@ jobs:
         run: |
           # 下载旧版 pahole deb 包
           wget http://archive.ubuntu.com/ubuntu/pool/universe/d/dwarves/pahole_1.22-8_amd64.deb
-          # 解压提取 pahole 二进制
-          ar x pahole_1.22-8_amd64.deb data.tar.xz
-          tar -xf data.tar.xz ./usr/bin/pahole
-          # 覆盖系统 pahole
-          sudo cp ./usr/bin/pahole /usr/bin/pahole
+          # 强制安装（覆盖已有的 pahole）
+          sudo dpkg -i --force-overwrite pahole_1.22-8_amd64.deb
+          # 如果依赖有问题，修复一下
+          sudo apt-get install -f -y
           # 验证版本
           echo "Installed pahole version:"
           pahole --version
