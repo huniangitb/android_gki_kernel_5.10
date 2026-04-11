@@ -1,4 +1,4 @@
-name: kerne-cust
+name: kerne-cust-btf
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
@@ -149,57 +149,37 @@ jobs:
           
           echo "构建配置完成"
 
-      - name: 下载并安装备用 pahole 1.23（避免 BTF 编码 bug）
-        run: |
-          # 如果系统 pahole 版本 >= 1.24，下载 1.23 备用
-          CURRENT_PAHOLE_VER=$(pahole --version | sed -E 's/v([0-9]+)\.([0-9]+)/\1\2/')
-          if [ "$CURRENT_PAHOLE_VER" -ge "124" ]; then
-            echo "当前 pahole 版本过高，下载稳定版 1.23..."
-            wget -q https://fedorapeople.org/~acme/pahole/pahole-1.23-x86_64.tar.xz -O /tmp/pahole-1.23.tar.xz
-            sudo tar -xJf /tmp/pahole-1.23.tar.xz -C /usr/local --strip-components=1
-            sudo chmod +x /usr/local/bin/pahole
-            echo "已安装 pahole 1.23: $(/usr/local/bin/pahole --version)"
-          else
-            echo "当前 pahole 版本 ${CURRENT_PAHOLE_VER} 无需替换"
-          fi
-
-      - name: 构建内核（完整 BTF 跳过参数 + 可选 pahole 降级）
+      - name: 构建内核（合并自动 flags，追加 inconsistent_proto，打印版本）
         run: |
           cd kernel_workspace
           
           export PATH="/usr/bin:$PATH"
           export KBUILD_VERBOSE=0
           
-          # 优先使用 /usr/local/bin/pahole（如果存在，即 1.23），否则使用系统 pahole
-          if [ -f /usr/local/bin/pahole ]; then
-            export PAHOLE="/usr/local/bin/pahole"
-          else
-            export PAHOLE="pahole"
-          fi
-          
+          # 1. 打印 pahole 版本
           echo "=========================================="
-          echo "使用的 pahole 路径: $PAHOLE"
-          echo "pahole 版本信息: $($PAHOLE --version)"
+          echo "当前 pahole 版本信息："
+          pahole --version
           echo "=========================================="
           
-          # 获取内核自动检测的 flags（基于实际使用的 PAHOLE 版本）
+          # 2. 获取内核自动检测的 flags（用于兼容不同版本 pahole）
           if [[ -f "common/scripts/pahole-flags.sh" ]]; then
-            AUTO_FLAGS=$(PAHOLE=$PAHOLE common/scripts/pahole-flags.sh)
+            AUTO_FLAGS=$(PAHOLE=pahole common/scripts/pahole-flags.sh)
             echo "内核自动检测的 PAHOLE_FLAGS: '$AUTO_FLAGS'"
           else
             AUTO_FLAGS=""
+            echo "警告: 未找到 common/scripts/pahole-flags.sh，将不使用自动 flags"
           fi
           
-          # 合并额外参数：--skip_encoding_btf_vars（解决 per-cpu 变量问题）
-          #            --skip_encoding_btf_inconsistent_proto（解决函数原型不一致）
-          # 注意：enum64 已由自动脚本处理
-          EXTRA_FLAGS="--skip_encoding_btf_vars --skip_encoding_btf_inconsistent_proto"
+          # 3. 合并额外参数（解决 unresolved symbol xdp_buff 等问题）
+          # 同时添加 --skip_encoding_btf_vars 以跳过全局变量编码，避免潜在的解析问题
+          EXTRA_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
           export PAHOLE_FLAGS="$AUTO_FLAGS $EXTRA_FLAGS"
           
           echo "最终使用的 PAHOLE_FLAGS: '$PAHOLE_FLAGS'"
           echo "=========================================="
           
-          # 执行构建，合并 stderr 并过滤无关警告
+          # 4. 执行构建，合并 stderr 并过滤无关警告
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
             { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
