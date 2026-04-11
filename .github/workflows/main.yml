@@ -150,11 +150,11 @@ jobs:
       - name: 构建内核（静默模式，过滤刷屏警告）
         run: |
           cd kernel_workspace
-          
+          set -o pipefail
           export PATH="/usr/bin:$PATH"
           export KBUILD_VERBOSE=0
           
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh | grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label"
           echo "内核编译完成！"
 
       - name: 上传额外构建文件 (config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list)
