@@ -1,4 +1,4 @@
-name: kerne-cust2
+name: kerne-cust
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
@@ -32,10 +32,10 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
-      - name: 安装基础依赖（包含 coreutils 解决 dd 缺失）
+      - name: 安装基础依赖（包含 coreutils 解决 dd 缺失，并安装 zstd）
         run: |
           sudo apt update
-          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
+          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils zstd
           # 确保 dd 可用
           which dd
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
@@ -47,16 +47,26 @@ jobs:
           sudo mv ~/repo /usr/local/bin/repo
           git config --global repo.url https://mirrors.tuna.tsinghua.edu.cn/git/git-repo
 
-      - name: 初始化源码仓库（使用清华 AOSP 镜像）
+      - name: 初始化源码仓库（使用预打包的 tarball 加速）
         run: |
           rm -rf kernel_workspace && mkdir kernel_workspace && cd kernel_workspace
-          repo init --depth 1 -u https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/manifest -b common-android12-5.10 --repo-url=https://mirrors.tuna.tsinghua.edu.cn/git/git-repo
-          repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle --force-sync
-          rm -rf common
-          echo "正在克隆源码仓库 (分支: android12-5.10-2025-09)..."
+          
+          echo "正在下载预打包的工具包（不含内核源码）..."
+          wget -q -c --show-progress --timeout=30 --tries=30 \
+            https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/common-android12-5.10.tar.zst \
+            -O common-android12-5.10.tar.zst
+          
+          echo "正在解压工具包..."
+          tar -I zstd -xf common-android12-5.10.tar.zst
+          
+          # 解压后应该会得到 kernel_workspace 下的文件（如 build/, prebuilts/ 等），但可能包含一个空的 common 目录，需要移除
+          rm -rf common 2>/dev/null || true
+          
+          echo "正在单独克隆内核源码（common 目录）..."
           git clone --depth=1 https://github.com/ztc1997/android_gki_kernel_5.10_common common -b android12-5.10-2025-09
+          
           echo "正在去除 ABI 保护 & 去除 dirty 后缀..."
-          rm common/android/abi_gki_protected_exports_* || echo "不需要去除保护"
+          rm common/android/abi_gki_protected_exports_* 2>/dev/null || echo "不需要去除保护"
           for f in common/scripts/setlocalversion; do
             sed -i 's/ -dirty//g' "$f"
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
@@ -89,7 +99,9 @@ jobs:
         run: |
           cd kernel_workspace
           echo "正在从 GitHub 下载 Clang r584948b..."
-          wget -q -c --show-progress --timeout=30 --tries=30 https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz -O clang-r584948b.tar.gz
+          wget -q -c --show-progress --timeout=30 --tries=30 \
+            https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz \
+            -O clang-r584948b.tar.gz
           echo "正在解压 Clang..."
           mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
           tar -xzf clang-r584948b.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
@@ -147,10 +159,10 @@ jobs:
             sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
           fi
           
-          # ★★★ 方案一：强制所有编译单元包含 net/xdp.h，解决 BTF 编码时 xdp_buff 类型不一致 ★★★
-          echo "KCFLAGS=-include net/xdp.h" >> common/build.config.common
+          # 强制包含 net/xdp.h 解决 BTF 类型不一致问题
+          echo "KCFLAGS=-I\$(srctree)/include -include net/xdp.h" >> common/build.config.common
           
-          echo "构建配置完成，已添加 KCFLAGS=-include net/xdp.h"
+          echo "构建配置完成，已添加 KCFLAGS=-I\$(srctree)/include -include net/xdp.h"
 
       - name: 构建内核（静默模式，过滤常见刷屏警告）
         run: |
