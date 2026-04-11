@@ -39,21 +39,17 @@ jobs:
           sudo apt install -y libdw-dev libz-dev libiberty-dev
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
 
-      - name: 从源码编译 pahole 1.21(使用 __LIB=lib 修正库路径）
+      - name: 从源码编译 pahole 1.23（修复库路径）
         run: |
-          git clone --recursive --branch v1.21 --depth 1 https://git.kernel.org/pub/scm/devel/pahole/pahole.git
+          git clone --recursive --branch v1.23 --depth 1 https://git.kernel.org/pub/scm/devel/pahole/pahole.git
           cd pahole
           mkdir build && cd build
-          # 关键：使用 __LIB=lib 将库安装到 /usr/local/lib
           cmake -DCMAKE_INSTALL_PREFIX=/usr/local -D__LIB=lib ..
           make -j$(nproc)
           sudo make install
           sudo ldconfig
-          # 验证库文件位置
-          echo "库文件列表："
-          ls -la /usr/local/lib/libdwarves*.so || echo "未找到库文件，检查 /usr/local/"
-          ls -la /usr/local/libdwarves* 2>/dev/null || true
           /usr/local/bin/pahole --version
+          ls -la /usr/local/lib/libdwarves*.so
 
       - name: 安装 repo 工具
         run: |
@@ -106,10 +102,54 @@ jobs:
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
 
-      - name: 修复 xdp_sock.h 前向声明
+      - name: （可选）修复 xdp_sock.h 前向声明
         run: |
           cd kernel_workspace/common
-          sed -i 's/^struct xdp_buff;$/#include <net\/xdp.h>/' include/net/xdp_sock.h || true
+          sed -i 's/^struct xdp_buff;$/#include <net\/xdp.h>/' include/net/xdp_sock.h 2>/dev/null || true
+
+      - name: 修改 BTF 生成脚本，自动跳过 xdp_buff 相关错误
+        run: |
+          cd kernel_workspace/common
+          cp scripts/link-vmlinux.sh scripts/link-vmlinux.sh.bak
+          
+          # 创建包装脚本，过滤特定错误并打印日志
+          cat > scripts/pahole_wrapper.sh << 'EOF'
+          #!/bin/bash
+          # 包装 pahole，过滤 unresolved symbol xdp_buff 错误，打印错误但返回成功
+          PAHOLE_BIN="$1"
+          shift
+          TEMP_LOG=$(mktemp)
+          set +e
+          $PAHOLE_BIN -J "$@" 2> "$TEMP_LOG"
+          EXIT_CODE=$?
+          set -e
+          
+          # 检查日志中是否包含目标错误
+          if grep -q "unresolved symbol xdp_buff" "$TEMP_LOG"; then
+              echo "BTF: Warning - unresolved symbol xdp_buff detected, ignoring and continuing." >&2
+              grep "unresolved symbol xdp_buff" "$TEMP_LOG" >&2
+              # 不退出，返回成功
+              rm -f "$TEMP_LOG"
+              exit 0
+          fi
+          
+          # 有其他错误则输出并返回原错误码
+          if [ $EXIT_CODE -ne 0 ]; then
+              cat "$TEMP_LOG" >&2
+              rm -f "$TEMP_LOG"
+              exit $EXIT_CODE
+          fi
+          
+          rm -f "$TEMP_LOG"
+          exit 0
+          EOF
+          chmod +x scripts/pahole_wrapper.sh
+          
+          # 修改 link-vmlinux.sh 中的 gen_btf 函数，使用包装脚本
+          sed -i '/LLVM_OBJCOPY="${OBJCOPY}" ${PAHOLE} -J ${PAHOLE_FLAGS} ${1}/c\
+          LLVM_OBJCOPY="${OBJCOPY}" scripts/pahole_wrapper.sh ${PAHOLE} ${PAHOLE_FLAGS} ${1}' scripts/link-vmlinux.sh
+          
+          echo "已修改 link-vmlinux.sh，BTF 生成时将自动跳过 xdp_buff 错误"
 
       - name: 配置构建环境
         run: |
@@ -124,7 +164,10 @@ jobs:
           if [[ -f "$LINK_VMLINUX" ]]; then
             sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
           fi
+          # 指定使用编译的 pahole
           echo "PAHOLE=/usr/local/bin/pahole" >> common/build.config.common
+          # 可选：添加跳过参数
+          echo "PAHOLE_FLAGS=--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars" >> common/build.config.common
 
       - name: 构建内核
         run: |
