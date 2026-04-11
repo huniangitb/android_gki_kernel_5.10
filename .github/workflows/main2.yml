@@ -32,11 +32,26 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
-      - name: 安装基础依赖（包含 zstd）
+      - name: 安装基础依赖（包含编译 pahole 所需工具）
         run: |
           sudo apt update
-          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils zstd
+          sudo apt install -y curl bison flex make binutils dwarves git lld zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils zstd cmake
+          # 编译 pahole 需要的额外依赖
+          sudo apt install -y libdw-dev libz-dev libiberty-dev
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
+
+      - name: 从源码编译 pahole 1.23
+        run: |
+          # 下载 pahole 1.23 源码
+          wget https://git.kernel.org/pub/scm/devel/pahole/pahole.git/snapshot/pahole-1.23.tar.gz
+          tar -xzf pahole-1.23.tar.gz
+          cd pahole-1.23
+          mkdir build && cd build
+          cmake -DCMAKE_INSTALL_PREFIX=/usr/local ..
+          make -j$(nproc)
+          sudo make install
+          # 验证安装
+          /usr/local/bin/pahole --version
 
       - name: 安装 repo 工具
         run: |
@@ -45,7 +60,7 @@ jobs:
           sudo mv ~/repo /usr/local/bin/repo
           git config --global repo.url https://mirrors.tuna.tsinghua.edu.cn/git/git-repo
 
-      - name: 初始化源码仓库（使用预打包 tarball）
+      - name: 初始化源码仓库（预打包工具包）
         run: |
           rm -rf kernel_workspace && mkdir kernel_workspace && cd kernel_workspace
           wget -q -c --show-progress --timeout=30 --tries=30 \
@@ -60,34 +75,27 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
-      - name: 直接修改 gki_defconfig
+      - name: 修改内核配置
         run: |
           cd kernel_workspace
           DEFCONFIG_PATH="common/arch/arm64/configs/gki_defconfig"
-          echo -e "\n# Custom additions for tmpfs features" >> "$DEFCONFIG_PATH"
+          echo -e "\n# Custom additions" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
           sed -i '/^CONFIG_DEBUG_INFO\b/d' "$DEFCONFIG_PATH"
           sed -i '/^# CONFIG_DEBUG_INFO is not set\b/d' "$DEFCONFIG_PATH"
           sed -i '/^CONFIG_DEBUG_INFO_BTF\b/d' "$DEFCONFIG_PATH"
-          echo -e "\n# BTF support" >> "$DEFCONFIG_PATH"
           echo "CONFIG_DEBUG_INFO=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG_PATH"
 
-      - name: 下载并安装 Clang
+      - name: 下载并安装自定义 Clang
         run: |
           cd kernel_workspace
           wget -q -c --show-progress https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz -O clang-r584948b.tar.gz
           mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
           tar -xzf clang-r584948b.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
 
-      - name: 打印 Clang 版本
-        run: |
-          cd kernel_workspace
-          CLANG_PATH="$(pwd)/prebuilts-master/clang/host/linux-x86/clang-r584948b/bin/clang"
-          ${CLANG_PATH} --version
-
-      - name: 添加内核名称后缀
+      - name: 添加内核后缀
         run: |
           cd kernel_workspace
           suffix="${{ github.event.inputs.kernel_suffix }}"
@@ -96,14 +104,12 @@ jobs:
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
 
-      - name: 修复 xdp_sock.h 中的前向声明（解决 BTF unresolved symbol）
+      - name: 修复 xdp_sock.h 前向声明（可选，与 pahole 1.23 配合更安全）
         run: |
           cd kernel_workspace/common
-          # 将前向声明替换为包含完整定义，避免 BTF 类型不一致
-          sed -i 's/^struct xdp_buff;$/#include <net\/xdp.h>/' include/net/xdp_sock.h
-          echo "已修改 include/net/xdp_sock.h"
+          sed -i 's/^struct xdp_buff;$/#include <net\/xdp.h>/' include/net/xdp_sock.h || true
 
-      - name: 配置构建环境（不写入 PAHOLE_FLAGS 到配置文件）
+      - name: 配置构建环境
         run: |
           cd kernel_workspace
           sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
@@ -116,28 +122,19 @@ jobs:
           if [[ -f "$LINK_VMLINUX" ]]; then
             sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
           fi
-          # 注意：不再写入 PAHOLE_FLAGS，改为在构建步骤中通过环境变量传递
-          echo "构建配置完成"
+          # 指定使用我们编译的 pahole 1.23
+          echo "PAHOLE=/usr/local/bin/pahole" >> common/build.config.common
 
-      - name: 构建内核（通过环境变量传递 PAHOLE_FLAGS）
+      - name: 构建内核
         run: |
           cd kernel_workspace
-          
-          export PATH="/usr/bin:$PATH"
+          export PATH="/usr/local/bin:$PATH"
           export KBUILD_VERBOSE=0
-          
-          # 通过环境变量设置 PAHOLE_FLAGS，避免 shell 解析问题
-          export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
-          
-          echo "=========================================="
-          echo "使用的 PAHOLE_FLAGS: ${PAHOLE_FLAGS}"
-          echo "=========================================="
-          
+          # 可选：设置 PAHOLE_FLAGS（pahole 1.23 不需要额外参数，但保留无害）
+          export PAHOLE_FLAGS=""
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
             { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
-          
-          echo "内核编译完成！"
 
       - name: 上传额外构建文件
         run: |
@@ -147,7 +144,6 @@ jobs:
           [ -f "out/android12-5.10/common/Module.symvers" ] && cp "out/android12-5.10/common/Module.symvers" build_artifacts/
           [ -f "out/android12-5.10/common/abi_symbollist.raw" ] && cp "out/android12-5.10/common/abi_symbollist.raw" build_artifacts/
           [ -f "build/abi/compare_to_symbol_list" ] && cp "build/abi/compare_to_symbol_list" build_artifacts/
-          ls -la build_artifacts/
 
       - name: 上传构建工件
         uses: actions/upload-artifact@v4
@@ -155,7 +151,7 @@ jobs:
           name: Kernel_Build_Artifacts
           path: kernel_workspace/build_artifacts/
 
-      - name: 克隆 AnyKernel3 并打包
+      - name: 打包 AnyKernel3
         run: |
           cd kernel_workspace
           git clone https://github.com/Winkmoon/AnyKernel3 --depth=1
@@ -170,7 +166,6 @@ jobs:
           echo "${{ env.KERNEL_VERSION }}" > kernel_version.txt
           ZIPNAME="AnyKernel3_${{ env.KERNEL_VERSION }}.zip"
           zip -r "../$ZIPNAME" ./*
-          echo "打包完成"
 
       - name: 上传 ZIP 工件
         uses: actions/upload-artifact@v4
