@@ -1,0 +1,279 @@
+name: kerne-cust-btf
+env:
+  TZ: Asia/Shanghai
+  CPU: 'mt6895'
+  FEIL: 'redmi+xiaomi'
+  ANDROID_VERSION: 'android12'
+  KERNEL_VERSION: '5.10.246'
+  KERNEL_NAME: 'cust'
+  REPO_URL: 'https://mirrors.tuna.tsinghua.edu.cn/git/git-repo'
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_suffix:
+        description: '内核后缀(留空默认,开头别加连字符)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 最大化建筑空间
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+          swap-size-mb: 8192
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: 安装基础依赖（包含 coreutils 解决 dd 缺失）
+        run: |
+          sudo apt update
+          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
+          # 确保 dd 可
+          which dd
+          sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
+
+      - name: 安装 repo 工具（使用清华镜像）
+        run: |
+          curl -s https://mirrors.tuna.tsinghua.edu.cn/git/git-repo > ~/repo
+          chmod a+x ~/repo
+          sudo mv ~/repo /usr/local/bin/repo
+          git config --global repo.url https://mirrors.tuna.tsinghua.edu.cn/git/git-repo
+
+      - name: 初始化源码仓库（使用清华 AOSP 镜像）
+        run: |
+          rm -rf kernel_workspace && mkdir kernel_workspace && cd kernel_workspace
+          repo init --depth 1 -u https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/manifest -b common-android12-5.10 --repo-url=https://mirrors.tuna.tsinghua.edu.cn/git/git-repo
+          repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle --force-sync
+          rm -rf common
+          echo "正在克隆源码仓库 (分支: android12-5.10-2025-09)..."
+          git clone --depth=1 https://github.com/ztc1997/android_gki_kernel_5.10_common common -b android12-5.10-2025-09
+          echo "正在去除 ABI 保护 & 去除 dirty 后缀..."
+          rm common/android/abi_gki_protected_exports_* || echo "不需要去除保护"
+          for f in common/scripts/setlocalversion; do
+            sed -i 's/ -dirty//g' "$f"
+            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
+          done
+
+      - name: 直接修改 gki_defconfig（添加/移除配置）
+        run: |
+          cd kernel_workspace
+          DEFCONFIG_PATH="common/arch/arm64/configs/gki_defconfig"
+          echo "===== 修改前配置关键项 ====="
+          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_KASAN" "$DEFCONFIG_PATH" || echo "未找到相关项"
+          
+          echo -e "\n# Custom additions for tmpfs features" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
+          
+          #sed -i 's/^CONFIG_KASAN=y/# CONFIG_KASAN is not set/' "$DEFCONFIG_PATH"
+
+          # ---------- 新增配置：开启 DEBUG_INFO_BTF，关闭 XDP_SOCKETS ----------
+          # 移除可能存在的旧配置，确保干净
+          sed -i '/^CONFIG_DEBUG_INFO\b/d' "$DEFCONFIG_PATH"
+          sed -i '/^# CONFIG_DEBUG_INFO is not set\b/d' "$DEFCONFIG_PATH"
+          sed -i '/^CONFIG_DEBUG_INFO_BTF\b/d' "$DEFCONFIG_PATH"
+          sed -i '/^CONFIG_XDP_SOCKETS\b/d' "$DEFCONFIG_PATH"
+
+          # 追加新配置
+          echo -e "\n# BTF and XDP configuration" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_DEBUG_INFO=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG_PATH"
+          echo "# CONFIG_XDP_SOCKETS is not set" >> "$DEFCONFIG_PATH"
+          # ----------------------------------------------------------------
+          
+          echo "===== 修改后配置关键项 ====="
+          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_KASAN|CONFIG_DEBUG_INFO_BTF|CONFIG_XDP_SOCKETS" "$DEFCONFIG_PATH"
+
+      - name: 下载并安装自定义 Clang (r584948b)
+        run: |
+          cd kernel_workspace
+          echo "正在从 GitHub 下载 Clang r584948b..."
+          wget -q -c --show-progress --timeout=30 --tries=30 https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz -O clang-r584948b.tar.gz
+          echo "正在解压 Clang..."
+          mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
+          tar -xzf clang-r584948b.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
+
+      - name: 打印 Clang 工具链详细信息
+        run: |
+          cd kernel_workspace
+          CLANG_BASE="prebuilts-master/clang/host/linux-x86/clang-r584948b"
+          CLANG_PATH="$(pwd)/${CLANG_BASE}/bin/clang"
+          echo "=========================================="
+          echo "Clang 工具链详细信息"
+          echo "=========================================="
+          echo "编译器路径: ${CLANG_PATH}"
+          if [[ -f "${CLANG_PATH}" ]]; then
+            ${CLANG_PATH} --version
+          else
+            echo "错误: 找不到 Clang 编译器！"
+            exit 1
+          fi
+
+      - name: 添加内核名称后缀
+        run: |
+          cd kernel_workspace
+          echo "替换内核版本后缀..."
+          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
+            suffix="${{ github.event.inputs.kernel_suffix }}"
+          else
+            suffix="${{ env.KERNEL_NAME }}"
+          fi
+          echo "当前内核版本后缀：${suffix}"
+          for f in ./common/scripts/setlocalversion; do
+            sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
+          done
+
+      - name: 配置构建环境 (禁用 MLGO，使用新版 Clang)
+        run: |
+          cd kernel_workspace
+          sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
+          CLANG_REL_PATH="prebuilts-master/clang/host/linux-x86/clang-r584948b/bin"
+          sed -i "s|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=$CLANG_REL_PATH|" common/build.config.common
+          sed -i 's/check_defconfig//' ./common/build.config.gki
+          echo "CC=clang" >> common/build.config.common
+          echo "KBUILD_VERBOSE=0" >> common/build.config.common
+          LINK_VMLINUX="common/scripts/link-vmlinux.sh"
+          if [[ -f "$LINK_VMLINUX" ]]; then
+            # 将 '| dd of=' 替换为 '| /usr/bin/dd of='
+            sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
+          fi
+          echo "构建配置完成"
+
+      - name: 构建内核（静默模式，过滤刷屏警告）
+        run: |
+          cd kernel_workspace
+          
+          export PATH="/usr/bin:$PATH"
+          export KBUILD_VERBOSE=0
+          
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
+          echo "内核编译完成！"
+
+      - name: 上传额外构建文件 (config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list)
+        run: |
+          cd kernel_workspace
+          mkdir -p build_artifacts
+          
+          CONFIG_FILE="out/android12-5.10/common/.config"
+          if [[ -f "$CONFIG_FILE" ]]; then
+            cp "$CONFIG_FILE" build_artifacts/config
+            cp "$CONFIG_FILE" "build_artifacts/config_$(date +'%Y%m%d_%H%M%S').txt"
+          else
+            echo "警告: 未找到 $CONFIG_FILE"
+          fi
+          
+          MODULE_SYMVERS="out/android12-5.10/common/Module.symvers"
+          if [[ -f "$MODULE_SYMVERS" ]]; then
+            cp "$MODULE_SYMVERS" build_artifacts/
+          else
+            echo "警告: 未找到 $MODULE_SYMVERS"
+          fi
+          
+          ABI_SYMLIST="out/android12-5.10/common/abi_symbollist.raw"
+          if [[ -f "$ABI_SYMLIST" ]]; then
+            cp "$ABI_SYMLIST" build_artifacts/
+          else
+            echo "警告: 未找到 $ABI_SYMLIST"
+          fi
+          
+          COMPARE_SCRIPT="build/abi/compare_to_symbol_list"
+          if [[ -f "$COMPARE_SCRIPT" ]]; then
+            cp "$COMPARE_SCRIPT" build_artifacts/
+          else
+            echo "警告: 未找到 $COMPARE_SCRIPT"
+          fi
+          
+          echo "文件收集完成，内容："
+          ls -la build_artifacts/
+
+      - name: 上传构建工件
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel_Build_Artifacts
+          path: kernel_workspace/build_artifacts/
+
+      - name: 克隆 AnyKernel3 并打包
+        run: |
+          cd kernel_workspace
+          git clone https://github.com/Winkmoon/AnyKernel3 --depth=1
+          rm -rf ./AnyKernel3/.git
+          IMAGE_FILE=$(find . -name Image | head -n1)
+          if [[ -f "$IMAGE_FILE" ]]; then
+            cp "$IMAGE_FILE" AnyKernel3/
+            echo "已复制内核镜像: $IMAGE_FILE"
+          else
+            echo "错误：未找到 Image 文件！"
+            exit 1
+          fi
+          cd AnyKernel3
+          echo "${{ env.KERNEL_VERSION }}" > kernel_version.txt
+          ZIPNAME="AnyKernel3_${{ env.KERNEL_VERSION }}.zip"
+          zip -r "../$ZIPNAME" ./*
+          echo "打包完成: $ZIPNAME"
+
+      - name: 上传 ZIP 工件
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel_ZIP_Artifacts
+          path: kernel_workspace/*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+
+    steps:
+      - name: 下载 ZIP 工件
+        uses: actions/download-artifact@v4
+        with:
+          name: Kernel_ZIP_Artifacts
+          path: ./release_zips
+
+      - name: 设置环境变量并创建 Release
+        id: vars
+        run: |
+          ZIP_FILE=$(ls ./release_zips/*.zip | head -n1)
+          if [[ -z "$ZIP_FILE" ]]; then
+            echo "错误：未找到 ZIP 文件"
+            exit 1
+          fi
+          KERNEL_VER=$(unzip -p "$ZIP_FILE" kernel_version.txt 2>/dev/null || echo "${{ env.KERNEL_VERSION }}")
+          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
+            FULL_VERSION="${KERNEL_VER}-${{ github.event.inputs.kernel_suffix }}"
+          else
+            FULL_VERSION="${KERNEL_VER}-${{ env.KERNEL_NAME }}"
+          fi
+          TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
+          TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
+          TAG_NAME="${{ env.KERNEL_VERSION }}-${{ env.KERNEL_NAME }}-${TIME}"
+          echo "FULL_VERSION=${FULL_VERSION}" >> $GITHUB_ENV
+          echo "TIME=${TIME}" >> $GITHUB_ENV
+          echo "TIME_FORM=${TIME_FORM}" >> $GITHUB_ENV
+          echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
+
+      - name: 创建 GitHub Release 并上传内核包
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: "内核 ${{ env.FULL_VERSION }}"
+          body: |
+            自动构建于 ${{ env.TIME_FORM }}
+            内核版本：${{ env.FULL_VERSION }}
+            设备：${{ env.CPU }} / ${{ env.FEIL }}
+            Android 版本：${{ env.ANDROID_VERSION }}
+          files: ./release_zips/*.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
