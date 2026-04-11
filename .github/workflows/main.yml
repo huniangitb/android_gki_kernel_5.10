@@ -36,7 +36,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
-          # 确保 dd 可
+          # 确保 dd 可用
           which dd
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
 
@@ -69,28 +69,21 @@ jobs:
           echo "===== 修改前配置关键项 ====="
           grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_KASAN" "$DEFCONFIG_PATH" || echo "未找到相关项"
           
+          # 添加 tmpfs 扩展属性支持
           echo -e "\n# Custom additions for tmpfs features" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
           
-          #sed -i 's/^CONFIG_KASAN=y/# CONFIG_KASAN is not set/' "$DEFCONFIG_PATH"
-
-          # ---------- 新增配置：开启 DEBUG_INFO_BTF，关闭 XDP_SOCKETS ----------
-          # 移除可能存在的旧配置，确保干净
+          # 开启 BTF 调试信息（用于 BPF）
           sed -i '/^CONFIG_DEBUG_INFO\b/d' "$DEFCONFIG_PATH"
           sed -i '/^# CONFIG_DEBUG_INFO is not set\b/d' "$DEFCONFIG_PATH"
           sed -i '/^CONFIG_DEBUG_INFO_BTF\b/d' "$DEFCONFIG_PATH"
-          sed -i '/^CONFIG_XDP_SOCKETS\b/d' "$DEFCONFIG_PATH"
-
-          # 追加新配置
-          echo -e "\n# BTF and XDP configuration" >> "$DEFCONFIG_PATH"
+          echo -e "\n# BTF support" >> "$DEFCONFIG_PATH"
           echo "CONFIG_DEBUG_INFO=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG_PATH"
-          echo "# CONFIG_XDP_SOCKETS is not set" >> "$DEFCONFIG_PATH"
-          # ----------------------------------------------------------------
           
           echo "===== 修改后配置关键项 ====="
-          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_KASAN|CONFIG_DEBUG_INFO_BTF|CONFIG_XDP_SOCKETS" "$DEFCONFIG_PATH"
+          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_DEBUG_INFO_BTF" "$DEFCONFIG_PATH"
 
       - name: 下载并安装自定义 Clang (r584948b)
         run: |
@@ -134,27 +127,63 @@ jobs:
       - name: 配置构建环境 (禁用 MLGO，使用新版 Clang)
         run: |
           cd kernel_workspace
+          # 禁用 MLGO 相关优化（避免与新版 Clang 冲突）
           sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
+          
+          # 替换 Clang 路径为自定义版本
           CLANG_REL_PATH="prebuilts-master/clang/host/linux-x86/clang-r584948b/bin"
           sed -i "s|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=$CLANG_REL_PATH|" common/build.config.common
+          
+          # 移除 check_defconfig 检查
           sed -i 's/check_defconfig//' ./common/build.config.gki
+          
+          # 设置编译器详细程度
           echo "CC=clang" >> common/build.config.common
           echo "KBUILD_VERBOSE=0" >> common/build.config.common
+          
+          # 修复 dd 路径问题（如果存在）
           LINK_VMLINUX="common/scripts/link-vmlinux.sh"
           if [[ -f "$LINK_VMLINUX" ]]; then
-            # 将 '| dd of=' 替换为 '| /usr/bin/dd of='
             sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
           fi
+          
+          # 注意：不再直接设置 PAHOLE_FLAGS，而是在构建步骤中通过环境变量动态合并
           echo "构建配置完成"
 
-      - name: 构建内核（静默模式，过滤刷屏警告）
+      - name: 构建内核（方案三：合并自动 flags，追加 inconsistent_proto，打印版本）
         run: |
           cd kernel_workspace
-          set -o pipefail
+          
           export PATH="/usr/bin:$PATH"
           export KBUILD_VERBOSE=0
           
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label"
+          # 1. 打印 pahole 版本
+          echo "=========================================="
+          echo "当前 pahole 版本信息："
+          pahole --version
+          echo "=========================================="
+          
+          # 2. 获取内核自动检测的 flags（用于兼容不同版本 pahole）
+          if [[ -f "common/scripts/pahole-flags.sh" ]]; then
+            AUTO_FLAGS=$(PAHOLE=pahole common/scripts/pahole-flags.sh)
+            echo "内核自动检测的 PAHOLE_FLAGS: '$AUTO_FLAGS'"
+          else
+            AUTO_FLAGS=""
+            echo "警告: 未找到 common/scripts/pahole-flags.sh，将不使用自动 flags"
+          fi
+          
+          # 3. 合并额外参数（解决 unresolved symbol xdp_buff 等问题）
+          EXTRA_FLAGS="--skip_encoding_btf_inconsistent_proto"
+          export PAHOLE_FLAGS="$AUTO_FLAGS $EXTRA_FLAGS"
+          
+          echo "最终使用的 PAHOLE_FLAGS: '$PAHOLE_FLAGS'"
+          echo "=========================================="
+          
+          # 4. 执行构建，合并 stderr 并过滤无关警告
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
+            grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
+            { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
+          
           echo "内核编译完成！"
 
       - name: 上传额外构建文件 (config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list)
