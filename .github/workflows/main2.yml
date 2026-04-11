@@ -1,4 +1,4 @@
-name: kerne-cust
+name: kerne-cust2
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
@@ -103,7 +103,7 @@ jobs:
           sed -i 's/^struct xdp_buff;$/#include <net\/xdp.h>/' include/net/xdp_sock.h
           echo "已修改 include/net/xdp_sock.h"
 
-      - name: 配置构建环境
+      - name: 配置构建环境（不写入 PAHOLE_FLAGS 到配置文件）
         run: |
           cd kernel_workspace
           sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
@@ -116,17 +116,28 @@ jobs:
           if [[ -f "$LINK_VMLINUX" ]]; then
             sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
           fi
-          # 添加 pahole 跳过参数作为额外保障
-          echo "PAHOLE_FLAGS=--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars" >> common/build.config.common
+          # 注意：不再写入 PAHOLE_FLAGS，改为在构建步骤中通过环境变量传递
+          echo "构建配置完成"
 
-      - name: 构建内核
+      - name: 构建内核（通过环境变量传递 PAHOLE_FLAGS）
         run: |
           cd kernel_workspace
+          
           export PATH="/usr/bin:$PATH"
           export KBUILD_VERBOSE=0
+          
+          # 通过环境变量设置 PAHOLE_FLAGS，避免 shell 解析问题
+          export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
+          
+          echo "=========================================="
+          echo "使用的 PAHOLE_FLAGS: ${PAHOLE_FLAGS}"
+          echo "=========================================="
+          
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
             { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
+          
+          echo "内核编译完成！"
 
       - name: 上传额外构建文件
         run: |
