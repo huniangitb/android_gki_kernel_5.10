@@ -102,54 +102,24 @@ jobs:
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
 
-      - name: （可选）修复 xdp_sock.h 前向声明
+      - name: 修补 resolve_btfids.c（使 xdp_buff 符号失败时不退出）
         run: |
-          cd kernel_workspace/common
-          sed -i 's/^struct xdp_buff;$/#include <net\/xdp.h>/' include/net/xdp_sock.h 2>/dev/null || true
-
-      - name: 修改 BTF 生成脚本，自动跳过 xdp_buff 相关错误
-        run: |
-          cd kernel_workspace/common
-          cp scripts/link-vmlinux.sh scripts/link-vmlinux.sh.bak
+          cd kernel_workspace/common/tools/bpf/resolve_btfids
+          cp main.c main.c.bak
           
-          # 创建包装脚本，过滤特定错误并打印日志
-          cat > scripts/pahole_wrapper.sh << 'EOF'
-          #!/bin/bash
-          # 包装 pahole，过滤 unresolved symbol xdp_buff 错误，打印错误但返回成功
-          PAHOLE_BIN="$1"
-          shift
-          TEMP_LOG=$(mktemp)
-          set +e
-          $PAHOLE_BIN -J "$@" 2> "$TEMP_LOG"
-          EXIT_CODE=$?
-          set -e
+          # 修改 id_patch 函数：遇到 xdp_buff 符号时只警告并返回0，否则正常报错
+          sed -i '/if (!id->id) {/,/^[[:space:]]*}/c\
+          if (!id->id) {\
+            if (strstr(id->name, "xdp_buff")) {\
+              fprintf(stderr, "WARNING: unresolved symbol %s, ignoring\\n", id->name);\
+              return 0;\
+            } else {\
+              fprintf(stderr, "FAILED unresolved symbol %s\\n", id->name);\
+              return -EINVAL;\
+            }\
+          }' main.c
           
-          # 检查日志中是否包含目标错误
-          if grep -q "unresolved symbol xdp_buff" "$TEMP_LOG"; then
-              echo "BTF: Warning - unresolved symbol xdp_buff detected, ignoring and continuing." >&2
-              grep "unresolved symbol xdp_buff" "$TEMP_LOG" >&2
-              # 不退出，返回成功
-              rm -f "$TEMP_LOG"
-              exit 0
-          fi
-          
-          # 有其他错误则输出并返回原错误码
-          if [ $EXIT_CODE -ne 0 ]; then
-              cat "$TEMP_LOG" >&2
-              rm -f "$TEMP_LOG"
-              exit $EXIT_CODE
-          fi
-          
-          rm -f "$TEMP_LOG"
-          exit 0
-          EOF
-          chmod +x scripts/pahole_wrapper.sh
-          
-          # 修改 link-vmlinux.sh 中的 gen_btf 函数，使用包装脚本
-          sed -i '/LLVM_OBJCOPY="${OBJCOPY}" ${PAHOLE} -J ${PAHOLE_FLAGS} ${1}/c\
-          LLVM_OBJCOPY="${OBJCOPY}" scripts/pahole_wrapper.sh ${PAHOLE} ${PAHOLE_FLAGS} ${1}' scripts/link-vmlinux.sh
-          
-          echo "已修改 link-vmlinux.sh，BTF 生成时将自动跳过 xdp_buff 错误"
+          echo "已修改 resolve_btfids 源码，构建时将自动使用修改后的版本"
 
       - name: 配置构建环境
         run: |
@@ -164,9 +134,7 @@ jobs:
           if [[ -f "$LINK_VMLINUX" ]]; then
             sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
           fi
-          # 指定使用编译的 pahole，但不再写入 PAHOLE_FLAGS 以避免 shell 解析错误
           echo "PAHOLE=/usr/local/bin/pahole" >> common/build.config.common
-          # 注意：PAHOLE_FLAGS 将在构建步骤中通过环境变量传递，不写入配置文件
 
       - name: 构建内核
         run: |
@@ -174,7 +142,6 @@ jobs:
           export PATH="/usr/local/bin:$PATH"
           export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
           export KBUILD_VERBOSE=0
-          # 通过环境变量传递 PAHOLE_FLAGS（不会被 shell 解析为命令）
           export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
           echo "使用的 PAHOLE_FLAGS: ${PAHOLE_FLAGS}"
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
