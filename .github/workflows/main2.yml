@@ -40,12 +40,11 @@ jobs:
           sudo apt install -y libdw-dev libz-dev libiberty-dev
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
 
-      - name: 从源码编译 pahole 1.23
+      - name: 从源码编译 pahole 1.23（使用 git clone 获取子模块）
         run: |
-          # 下载 pahole 1.23 源码
-          wget https://git.kernel.org/pub/scm/devel/pahole/pahole.git/snapshot/pahole-1.23.tar.gz
-          tar -xzf pahole-1.23.tar.gz
-          cd pahole-1.23
+          # 克隆带子模块的 pahole 仓库（分支 v1.23）
+          git clone --recursive --branch v1.23 --depth 1 https://git.kernel.org/pub/scm/devel/pahole/pahole.git
+          cd pahole
           mkdir build && cd build
           cmake -DCMAKE_INSTALL_PREFIX=/usr/local ..
           make -j$(nproc)
@@ -130,8 +129,7 @@ jobs:
           cd kernel_workspace
           export PATH="/usr/local/bin:$PATH"
           export KBUILD_VERBOSE=0
-          # 可选：设置 PAHOLE_FLAGS（pahole 1.23 不需要额外参数，但保留无害）
-          export PAHOLE_FLAGS=""
+          # pahole 1.23 不需要额外跳过参数，直接编译
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
             { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
