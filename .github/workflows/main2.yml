@@ -136,7 +136,7 @@ jobs:
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
 
-      - name: 配置构建环境 (禁用 MLGO，使用新版 Clang，强制包含 xdp.h)
+      - name: 配置构建环境 (禁用 MLGO，使用新版 Clang)
         run: |
           cd kernel_workspace
           # 禁用 MLGO 相关优化（避免与新版 Clang 冲突）
@@ -159,19 +159,24 @@ jobs:
             sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
           fi
           
-          # 获取内核源码的绝对路径（用于 -I 参数）
-          KERNEL_ABS_PATH=$(pwd)/common
-          # 强制包含 net/xdp.h 解决 BTF 类型不一致问题
-          echo "KCFLAGS=-I${KERNEL_ABS_PATH}/include -include net/xdp.h" >> common/build.config.common
-          
-          echo "构建配置完成，已添加 KCFLAGS=-I${KERNEL_ABS_PATH}/include -include net/xdp.h"
+          # 注意：不再写入 KCFLAGS 到配置文件，改为在构建步骤中通过环境变量传递
+          echo "构建配置完成"
 
-      - name: 构建内核（静默模式，过滤常见刷屏警告）
+      - name: 构建内核（通过环境变量强制包含 xdp.h）
         run: |
           cd kernel_workspace
           
           export PATH="/usr/bin:$PATH"
           export KBUILD_VERBOSE=0
+          
+          # 获取内核源码绝对路径
+          KERNEL_ABS_PATH=$(pwd)/common
+          # 设置 KCFLAGS，强制包含 net/xdp.h（解决 BTF 类型不一致）
+          export KCFLAGS="-I${KERNEL_ABS_PATH}/include -include net/xdp.h"
+          
+          echo "=========================================="
+          echo "使用的 KCFLAGS: ${KCFLAGS}"
+          echo "=========================================="
           
           # 将 stderr 合并到 stdout 并过滤掉无意义的 dwarf 警告（同时保留错误信息）
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
