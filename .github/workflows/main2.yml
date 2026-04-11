@@ -32,24 +32,27 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
-      - name: 安装基础依赖（包含编译 pahole 所需工具）
+      - name: 安装基础依赖
         run: |
           sudo apt update
           sudo apt install -y curl bison flex make binutils dwarves git lld zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils zstd cmake
-          # 编译 pahole 需要的额外依赖
           sudo apt install -y libdw-dev libz-dev libiberty-dev
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
 
-      - name: 从源码编译 pahole 1.23（使用 git clone 获取子模块）
+      - name: 从源码编译 pahole 1.23（使用 __LIB=lib 修正库路径）
         run: |
-          # 克隆带子模块的 pahole 仓库（分支 v1.23）
           git clone --recursive --branch v1.23 --depth 1 https://git.kernel.org/pub/scm/devel/pahole/pahole.git
           cd pahole
           mkdir build && cd build
-          cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INSTALL_LIBDIR=lib ..
+          # 关键：使用 __LIB=lib 将库安装到 /usr/local/lib
+          cmake -DCMAKE_INSTALL_PREFIX=/usr/local -D__LIB=lib ..
           make -j$(nproc)
           sudo make install
-          # 验证安装
+          sudo ldconfig
+          # 验证库文件位置
+          echo "库文件列表："
+          ls -la /usr/local/lib/libdwarves*.so || echo "未找到库文件，检查 /usr/local/"
+          ls -la /usr/local/libdwarves* 2>/dev/null || true
           /usr/local/bin/pahole --version
 
       - name: 安装 repo 工具
@@ -103,7 +106,7 @@ jobs:
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
 
-      - name: 修复 xdp_sock.h 前向声明（可选，与 pahole 1.23 配合更安全）
+      - name: 修复 xdp_sock.h 前向声明
         run: |
           cd kernel_workspace/common
           sed -i 's/^struct xdp_buff;$/#include <net\/xdp.h>/' include/net/xdp_sock.h || true
@@ -121,15 +124,14 @@ jobs:
           if [[ -f "$LINK_VMLINUX" ]]; then
             sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
           fi
-          # 指定使用我们编译的 pahole 1.23
           echo "PAHOLE=/usr/local/bin/pahole" >> common/build.config.common
 
       - name: 构建内核
         run: |
           cd kernel_workspace
           export PATH="/usr/local/bin:$PATH"
+          export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
           export KBUILD_VERBOSE=0
-          # pahole 1.23 不需要额外跳过参数，直接编译
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
             { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
