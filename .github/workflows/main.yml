@@ -40,6 +40,19 @@ jobs:
           which dd
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
 
+      - name: 安装特定版本 pahole (1.22-8) 替换新版
+        run: |
+          # 下载旧版 pahole deb 包
+          wget http://archive.ubuntu.com/ubuntu/pool/universe/d/dwarves/pahole_1.22-8_amd64.deb
+          # 解压提取 pahole 二进制
+          ar x pahole_1.22-8_amd64.deb data.tar.xz
+          tar -xf data.tar.xz ./usr/bin/pahole
+          # 覆盖系统 pahole
+          sudo cp ./usr/bin/pahole /usr/bin/pahole
+          # 验证版本
+          echo "Installed pahole version:"
+          pahole --version
+
       - name: 安装 repo 工具（使用清华镜像）
         run: |
           curl -s https://mirrors.tuna.tsinghua.edu.cn/git/git-repo > ~/repo
@@ -149,20 +162,20 @@ jobs:
           
           echo "构建配置完成"
 
-      - name: 构建内核（合并自动 flags，追加 inconsistent_proto，打印版本）
+      - name: 构建内核（使用旧版 pahole，移除不兼容 flags）
         run: |
           cd kernel_workspace
           
           export PATH="/usr/bin:$PATH"
           export KBUILD_VERBOSE=0
           
-          # 1. 打印 pahole 版本
+          # 1. 打印 pahole 版本（应为 1.22）
           echo "=========================================="
           echo "当前 pahole 版本信息："
           pahole --version
           echo "=========================================="
           
-          # 2. 获取内核自动检测的 flags（用于兼容不同版本 pahole）
+          # 2. 获取内核自动检测的 flags（用于兼容当前 pahole 版本）
           if [[ -f "common/scripts/pahole-flags.sh" ]]; then
             AUTO_FLAGS=$(PAHOLE=pahole common/scripts/pahole-flags.sh)
             echo "内核自动检测的 PAHOLE_FLAGS: '$AUTO_FLAGS'"
@@ -171,10 +184,8 @@ jobs:
             echo "警告: 未找到 common/scripts/pahole-flags.sh，将不使用自动 flags"
           fi
           
-          # 3. 合并额外参数（解决 unresolved symbol xdp_buff 等问题）
-          # 同时添加 --skip_encoding_btf_vars 以跳过全局变量编码，避免潜在的解析问题
-          EXTRA_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
-          export PAHOLE_FLAGS="$AUTO_FLAGS $EXTRA_FLAGS"
+          # 3. 使用旧版 pahole，不再添加额外 flags（新版特定的 --skip_encoding_btf_* 不支持）
+          export PAHOLE_FLAGS="$AUTO_FLAGS"
           
           echo "最终使用的 PAHOLE_FLAGS: '$PAHOLE_FLAGS'"
           echo "=========================================="
