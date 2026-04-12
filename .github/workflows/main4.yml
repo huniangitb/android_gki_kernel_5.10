@@ -1,4 +1,4 @@
-name: kerne-cust2-g
+name: kerne-cust2
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
@@ -37,7 +37,9 @@ jobs:
           sudo apt update
           sudo apt install -y curl bison flex make binutils dwarves git lld zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils zstd cmake gdb
           sudo apt install -y libdw-dev libz-dev libiberty-dev
+          sudo apt install -y libelf-dev pkg-config
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
+          sudo ln -sf /usr/bin/printf /bin/printf 2>/dev/null || true
 
       - name: 从源码编译 pahole master（带调试符号）
         run: |
@@ -106,6 +108,37 @@ jobs:
           }' main.c
           echo "已修改 resolve_btfids 源码"
 
+      - name: 修复 resolve_btfids 编译环境（libelf 和 printf）
+        run: |
+          cd kernel_workspace
+          
+          # 确保 printf 可用
+          sudo ln -sf /usr/bin/printf /bin/printf 2>/dev/null || true
+          sudo ln -sf /usr/bin/printf /usr/bin/printf 2>/dev/null || true
+          
+          # 修复 resolve_btfids 的 Makefile
+          RESOLVE_BTFIDS_DIR="common/tools/bpf/resolve_btfids"
+          if [ -f "$RESOLVE_BTFIDS_DIR/Makefile" ]; then
+            # 备份原文件
+            cp "$RESOLVE_BTFIDS_DIR/Makefile" "$RESOLVE_BTFIDS_DIR/Makefile.bak"
+            
+            # 修改 Makefile 添加 libelf 路径
+            sed -i 's|^\(CFLAGS =\)|\1 -I/usr/include -I/usr/local/include|' "$RESOLVE_BTFIDS_DIR/Makefile"
+            sed -i 's|^\(LDFLAGS =\)|\1 -L/usr/lib/x86_64-linux-gnu -lelf|' "$RESOLVE_BTFIDS_DIR/Makefile"
+            
+            # 如果上面的模式匹配失败，尝试在文件末尾添加
+            if ! grep -q "CFLAGS.*-I/usr/include" "$RESOLVE_BTFIDS_DIR/Makefile"; then
+              echo "CFLAGS += -I/usr/include -I/usr/local/include" >> "$RESOLVE_BTFIDS_DIR/Makefile"
+              echo "LDFLAGS += -L/usr/lib/x86_64-linux-gnu -lelf" >> "$RESOLVE_BTFIDS_DIR/Makefile"
+            fi
+          fi
+          
+          # 验证 libelf
+          echo "验证 libelf 安装："
+          pkg-config --libs --cflags libelf 2>/dev/null || echo "libelf.pc 未找到"
+          ls -la /usr/lib/x86_64-linux-gnu/libelf.so* 2>/dev/null || echo "检查 libelf.so"
+          ls -la /usr/lib/libelf.so* 2>/dev/null || echo "检查备用路径"
+
       - name: 配置构建环境（自动探测 Clang 并写入配置）
         run: |
           cd kernel_workspace
@@ -145,21 +178,29 @@ jobs:
 
           # 6. 设置 pahole 路径
           echo "PAHOLE=/usr/local/bin/pahole" >> "$CONFIG_FILE"
+          
+          # 7. 添加主机编译标志
+          echo "HOSTCFLAGS += -I/usr/include" >> "$CONFIG_FILE"
+          echo "HOSTLDFLAGS += -L/usr/lib/x86_64-linux-gnu -lelf" >> "$CONFIG_FILE"
 
       - name: 构建内核（先让编译失败，保留 .tmp_vmlinux.btf）
         run: |
           cd kernel_workspace
-          export PATH="/usr/local/bin:$PATH"
-          export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+          # 设置完整的 PATH
+          export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+          export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
           export KBUILD_VERBOSE=0
           export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
-
+          
+          # 确保 printf 可用
+          sudo ln -sf /usr/bin/printf /bin/printf 2>/dev/null || true
+          
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || true
-
+          
           echo "查找 .tmp_vmlinux.btf 文件..."
           find . -name ".tmp_vmlinux.btf" -ls 2>/dev/null || echo "未找到 .tmp_vmlinux.btf"
-
+          
           if [ -f "out/android12-5.10/common/.tmp_vmlinux.btf" ]; then
             cp "out/android12-5.10/common/.tmp_vmlinux.btf" .tmp_vmlinux.btf
             echo "已复制 .tmp_vmlinux.btf"
@@ -365,12 +406,16 @@ jobs:
       - name: 最终构建内核
         run: |
           cd kernel_workspace
-          export PATH="/usr/local/bin:$PATH"
-          export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+          # 设置完整的 PATH
+          export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+          export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
           export KBUILD_VERBOSE=0
           export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
           
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
+          # 确保 printf 可用
+          sudo ln -sf /usr/bin/printf /bin/printf 2>/dev/null || true
+          
+          #LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
             { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
           
@@ -452,4 +497,4 @@ jobs:
             Android 版本：${{ env.ANDROID_VERSION }}
           files: ./release_zips/*.zip
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}1
