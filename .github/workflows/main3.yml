@@ -1,4 +1,4 @@
-name: kerne-cust-esk
+name: kerne-cust2-esk
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
@@ -65,13 +65,6 @@ jobs:
           sudo make install
           sudo ldconfig
 
-      - name: 安装 repo 工具
-        run: |
-          curl -s https://mirrors.tuna.tsinghua.edu.cn/git/git-repo > ~/repo
-          chmod a+x ~/repo
-          sudo mv ~/repo /usr/local/bin/repo
-          git config --global repo.url https://mirrors.tuna.tsinghua.edu.cn/git/git-repo
-
       - name: 缓存内核源码
         id: cache-kernel
         uses: actions/cache@v4
@@ -117,19 +110,11 @@ jobs:
           cd kernel_workspace
           DEFCONFIG=$(find common/arch/arm64/configs -name "*defconfig" | head -1)
           if [ -n "$DEFCONFIG" ]; then
-            # 基本配置
             echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
             echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
             echo "CONFIG_DEBUG_INFO=y" >> "$DEFCONFIG"
             echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG"
-            
-            # 修复 Mali GPU 平台配置
             echo "CONFIG_MALI_PLATFORM_NAME=\"mt6895\"" >> "$DEFCONFIG"
-            echo "CONFIG_MALI_MIDGARD=y" >> "$DEFCONFIG"
-            echo "CONFIG_MALI_DEVFREQ=y" >> "$DEFCONFIG"
-            echo "CONFIG_MALI_PLATFORM_THIRDPARTY_NAME=\"mediatek\"" >> "$DEFCONFIG"
-            
-            echo "已添加 Mali 平台配置"
           fi
 
       - name: 添加内核后缀
@@ -159,6 +144,10 @@ jobs:
             echo "CC=clang" >> common/build.config.common
             echo "PAHOLE=/usr/local/bin/pahole" >> common/build.config.common
           fi
+          
+          # 设置 Mali 平台
+          echo "MALI_PLATFORM_NAME=mt6895" >> common/build.config.common
+          echo "CONFIG_MALI_PLATFORM_NAME=mt6895" >> common/build.config.common
 
       - name: 构建内核
         id: build_kernel
@@ -166,20 +155,19 @@ jobs:
           cd kernel_workspace
           export PATH="/usr/local/bin:$PATH"
           export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
+          export KBUILD_VERBOSE=0
+          export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
+          export MALI_PLATFORM_NAME="mt6895"
           
-          # 使用 defconfig
-          cd common
-          DEFCONFIG=$(find arch/arm64/configs -name "*defconfig" | head -1)
-          echo "使用 defconfig: $DEFCONFIG"
-          
-          # 生成 .config
-          make ARCH=arm64 CC=clang LD=ld.lld $DEFCONFIG
-          
-          # 构建内核
-          make ARCH=arm64 CC=clang LD=ld.lld -j$(nproc) 2>&1 | tee ../build_output.log
-          cd ..
+          # 使用构建脚本
+          if [ -f "build/build.sh" ]; then
+            LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
+              grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
+              { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
+          else
+            echo "错误: build/build.sh 不存在"
+            exit 1
+          fi
           
           # 检查 Image 是否存在
           IMAGE_FILE=$(find . -name "Image" | head -1)
@@ -191,8 +179,6 @@ jobs:
           else
             echo "build_success=false" >> $GITHUB_OUTPUT
             echo "内核构建失败"
-            # 显示错误日志最后100行
-            tail -100 build_output.log
           fi
 
       - name: 设置输出
