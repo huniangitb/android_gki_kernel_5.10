@@ -156,7 +156,7 @@ jobs:
             echo "警告: 未找到 .tmp_vmlinux.btf 文件"
           fi
 
-      - name: 使用 GDB 跟踪 pahole -J 命令（增强断点）
+      - name: 使用 GDB 跟踪 pahole -J 命令（增强断点 + DWARF 版本检测）
         run: |
           cd kernel_workspace
           
@@ -167,6 +167,30 @@ jobs:
           fi
           
           echo "=========================================="
+          echo "检测 DWARF 版本信息"
+          echo "=========================================="
+          
+          # 使用 readelf 检测 DWARF 版本
+          echo "=== DWARF Version Detection ===" > dwarf_info.txt
+          echo "File: .tmp_vmlinux.btf" >> dwarf_info.txt
+          readelf -S .tmp_vmlinux.btf | grep -E "debug_info|debug_abbrev|debug_line" >> dwarf_info.txt 2>&1
+          echo "" >> dwarf_info.txt
+          echo "=== Detailed DWARF Info ===" >> dwarf_info.txt
+          readelf -wi .tmp_vmlinux.btf 2>/dev/null | head -100 >> dwarf_info.txt
+          echo "" >> dwarf_info.txt
+          echo "=== DWARF Version from debug_info section ===" >> dwarf_info.txt
+          readelf -wi .tmp_vmlinux.btf 2>/dev/null | grep -E "DW_TAG_compile_unit|DW_AT_producer|DW_AT_language|Version" | head -20 >> dwarf_info.txt
+          
+          # 使用 llvm-dwarfdump 如果可用
+          if command -v llvm-dwarfdump &> /dev/null; then
+            echo "=== llvm-dwarfdump output ===" >> dwarf_info.txt
+            llvm-dwarfdump --version >> dwarf_info.txt 2>&1
+            llvm-dwarfdump .tmp_vmlinux.btf 2>/dev/null | head -50 >> dwarf_info.txt
+          fi
+          
+          cat dwarf_info.txt
+          
+          echo "=========================================="
           echo "开始 GDB 跟踪 pahole -J .tmp_vmlinux.btf"
           echo "=========================================="
           
@@ -174,6 +198,12 @@ jobs:
           set logging file pahole_gdb_output.txt
           set logging on
           set pagination off
+          
+          # 打印 DWARF 相关库版本
+          printf "\n=== DWARF Library Information ===\n"
+          # 尝试获取 libdw 版本
+          shell printf "libdw version: " && (dpkg -l | grep libdw-dev | awk '{print $3}' || echo "unknown")
+          shell printf "elfutils version: " && (eu-readelf --version 2>&1 | head -1 || echo "unknown")
           
           # 关键断点：BTF 编码流程
           break btf_encoder__new
@@ -187,10 +217,15 @@ jobs:
           break tag__recode_dwarf_type
           break lexblock__recode_dwarf_types
           
+          # 添加 DWARF 版本相关断点
+          break dwarf_get_units
+          break dwarf_begin
+          break dwarf_begin_elf
+          
           # 运行参数
           run -J .tmp_vmlinux.btf
           
-          # 断点命令：打印调用栈和局部变量（仅当需要时）
+          # 断点命令：打印调用栈和局部变量
           commands 1
             printf "\n>>> Entered btf_encoder__new\n"
             bt 5
@@ -216,11 +251,16 @@ jobs:
           commands 5
             printf "\n>>> Entered cu__encode\n"
             bt 5
+            # 尝试打印 DWARF 版本信息
+            if dwarf_version
+              printf "DWARF version: %d\n", dwarf_version
+            end
             continue
           end
           commands 6
             printf "\n>>> Entered dwarf_cu__create\n"
             bt 5
+            info locals
             continue
           end
           commands 7
@@ -233,6 +273,18 @@ jobs:
             printf "\n>>> Entered lexblock__recode_dwarf_types (可能出错)\n"
             bt 5
             info locals
+            continue
+          end
+          commands 9
+            printf "\n>>> Entered dwarf_get_units\n"
+            bt 3
+            continue
+          end
+          commands 10
+            printf "\n>>> Entered dwarf_begin / dwarf_begin_elf\n"
+            bt 3
+            # 尝试获取 DWARF 版本
+            shell echo "Checking DWARF version from debug_info..."
             continue
           end
           
@@ -254,6 +306,7 @@ jobs:
           [ -f "pahole_gdb.log" ] && cp pahole_gdb.log gdb_trace/
           [ -f "pahole_gdb_output.txt" ] && cp pahole_gdb_output.txt gdb_trace/
           [ -f ".tmp_vmlinux.btf" ] && cp .tmp_vmlinux.btf gdb_trace/
+          [ -f "dwarf_info.txt" ] && cp dwarf_info.txt gdb_trace/
           
           echo "=== System Information ===" > gdb_trace/system_info.txt
           uname -a >> gdb_trace/system_info.txt
@@ -264,12 +317,25 @@ jobs:
           echo "=== Library dependencies ===" >> gdb_trace/system_info.txt
           ldd /usr/local/bin/pahole >> gdb_trace/system_info.txt
           
+          echo "=== DWARF Library Versions ===" >> gdb_trace/system_info.txt
+          dpkg -l | grep -E "libdw|elfutils|dwarves" >> gdb_trace/system_info.txt 2>&1
+          echo "=== eu-readelf version ===" >> gdb_trace/system_info.txt
+          eu-readelf --version 2>&1 | head -1 >> gdb_trace/system_info.txt
+          
           echo "=== .tmp_vmlinux.btf file info ===" >> gdb_trace/system_info.txt
           ls -la gdb_trace/.tmp_vmlinux.btf 2>/dev/null || echo "文件不存在" >> gdb_trace/system_info.txt
           file gdb_trace/.tmp_vmlinux.btf 2>/dev/null >> gdb_trace/system_info.txt
           
           echo "=== .tmp_vmlinux.btf sections ===" >> gdb_trace/system_info.txt
           readelf -S gdb_trace/.tmp_vmlinux.btf 2>/dev/null >> gdb_trace/system_info.txt || echo "无法读取" >> gdb_trace/system_info.txt
+          
+          echo "=== DWARF Version Analysis ===" >> gdb_trace/system_info.txt
+          echo "Detecting DWARF version from .tmp_vmlinux.btf:" >> gdb_trace/system_info.txt
+          readelf -wi gdb_trace/.tmp_vmlinux.btf 2>/dev/null | grep -E "DW_TAG_compile_unit|DW_AT_producer|Version" | head -30 >> gdb_trace/system_info.txt
+          
+          # 使用 objdump 检测 DWARF 版本
+          echo "=== objdump DWARF info ===" >> gdb_trace/system_info.txt
+          objdump --dwarf=info gdb_trace/.tmp_vmlinux.btf 2>/dev/null | head -50 >> gdb_trace/system_info.txt
           
           echo "跟踪文件已收集到 gdb_trace 目录"
           ls -la gdb_trace/
@@ -279,8 +345,6 @@ jobs:
         with:
           name: GDB_Trace_Artifacts
           path: kernel_workspace/gdb_trace/
-
-      # 已删除“继续构建完整内核”步骤，因为 resolve_btfids.c 的修改已使 BTF 错误变为警告
 
       - name: 最终构建内核
         run: |
