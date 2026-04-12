@@ -64,7 +64,7 @@ jobs:
           repo init --depth 1 -u https://android.googlesource.com/kernel/manifest -b common-android12-5.10
           repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle --force-sync
 
-          # 清理不需要的 ABI 保护符号文件（与原流程一致）
+          # 清理不需要的 ABI 保护符号文件
           rm -f common/android/abi_gki_protected_exports_* 2>/dev/null || true
 
           # 修改 setlocalversion 去掉 -dirty 标记
@@ -110,15 +110,17 @@ jobs:
         run: |
           cd kernel_workspace
 
-          # 1. 禁用 regalloc advisor（原流程）
+          # 1. 禁用 regalloc advisor
           sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
 
-          # 2. 自动探测 Clang 路径（从 repo 拉取的 prebuilts 中查找）
-          CLANG_DIR=$(find prebuilts/clang/host/linux-x86 -maxdepth 2 -type f -name clang -path "*/bin/clang" -printf "%h\n" -quit)
-          if [ -z "$CLANG_DIR" ]; then
-            echo "错误：未找到 Clang 工具链，请检查 repo sync 是否完整"
+          # 2. 自动查找 clang 可执行文件（任意位置）
+          CLANG_BIN=$(find . -path "*/bin/clang" -type f -executable 2>/dev/null | head -1)
+          if [ -z "$CLANG_BIN" ]; then
+            echo "错误：未找到 clang 可执行文件，请检查 repo sync 是否完整"
+            find . -name "clang" -type f 2>/dev/null || echo "无 clang 文件"
             exit 1
           fi
+          CLANG_DIR=$(dirname "$CLANG_BIN")
           CLANG_REL_PATH="${CLANG_DIR#$PWD/}"
           echo "检测到 Clang 路径: $CLANG_REL_PATH"
 
@@ -153,7 +155,7 @@ jobs:
           export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
 
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
-            grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label"
+            grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || true
 
           echo "查找 .tmp_vmlinux.btf 文件..."
           find . -name ".tmp_vmlinux.btf" -ls 2>/dev/null || echo "未找到 .tmp_vmlinux.btf"
@@ -171,16 +173,188 @@ jobs:
           fi
 
       - name: 使用 GDB 跟踪 pahole -J 命令（增强断点 + DWARF 版本检测）
-        # 此处内容与原工作流完全相同，省略以保持简洁，实际使用时请保留原步骤
         run: |
           cd kernel_workspace
-          # ...（原步骤内容）...
+          
+          if [ ! -f ".tmp_vmlinux.btf" ]; then
+            echo "错误: .tmp_vmlinux.btf 不存在，尝试查找..."
+            find . -name "*.btf" -ls 2>/dev/null || echo "未找到任何 .btf 文件"
+            exit 1
+          fi
+          
+          echo "=========================================="
+          echo "检测 DWARF 版本信息"
+          echo "=========================================="
+          
+          # 使用 readelf 检测 DWARF 版本
+          echo "=== DWARF Version Detection ===" > dwarf_info.txt
+          echo "File: .tmp_vmlinux.btf" >> dwarf_info.txt
+          readelf -S .tmp_vmlinux.btf | grep -E "debug_info|debug_abbrev|debug_line" >> dwarf_info.txt 2>&1
+          echo "" >> dwarf_info.txt
+          echo "=== Detailed DWARF Info ===" >> dwarf_info.txt
+          readelf -wi .tmp_vmlinux.btf 2>/dev/null | head -100 >> dwarf_info.txt
+          echo "" >> dwarf_info.txt
+          echo "=== DWARF Version from debug_info section ===" >> dwarf_info.txt
+          readelf -wi .tmp_vmlinux.btf 2>/dev/null | grep -E "DW_TAG_compile_unit|DW_AT_producer|DW_AT_language|Version" | head -20 >> dwarf_info.txt
+          
+          # 使用 llvm-dwarfdump 如果可用
+          if command -v llvm-dwarfdump &> /dev/null; then
+            echo "=== llvm-dwarfdump output ===" >> dwarf_info.txt
+            llvm-dwarfdump --version >> dwarf_info.txt 2>&1
+            llvm-dwarfdump .tmp_vmlinux.btf 2>/dev/null | head -50 >> dwarf_info.txt
+          fi
+          
+          cat dwarf_info.txt
+          
+          echo "=========================================="
+          echo "开始 GDB 跟踪 pahole -J .tmp_vmlinux.btf"
+          echo "=========================================="
+          
+          cat > gdb_commands.txt << 'EOF'
+          set logging file pahole_gdb_output.txt
+          set logging on
+          set pagination off
+          
+          # 打印 DWARF 相关库版本
+          printf "\n=== DWARF Library Information ===\n"
+          # 尝试获取 libdw 版本
+          shell printf "libdw version: " && (dpkg -l | grep libdw-dev | awk '{print $3}' || echo "unknown")
+          shell printf "elfutils version: " && (eu-readelf --version 2>&1 | head -1 || echo "unknown")
+          
+          # 关键断点：BTF 编码流程
+          break btf_encoder__new
+          break btf_encoder__encode
+          break btf_encoder__add_type
+          break btf_encoder__delete
+          
+          # DWARF 处理相关断点
+          break cu__encode
+          break dwarf_cu__create
+          break tag__recode_dwarf_type
+          break lexblock__recode_dwarf_types
+          
+          # 添加 DWARF 版本相关断点
+          break dwarf_get_units
+          break dwarf_begin
+          break dwarf_begin_elf
+          
+          # 运行参数
+          run -J .tmp_vmlinux.btf
+          
+          # 断点命令：打印调用栈和局部变量
+          commands 1
+            printf "\n>>> Entered btf_encoder__new\n"
+            bt 5
+            continue
+          end
+          commands 2
+            printf "\n>>> Entered btf_encoder__encode\n"
+            bt 5
+            info locals
+            continue
+          end
+          commands 3
+            printf "\n>>> Entered btf_encoder__add_type\n"
+            bt 5
+            info locals
+            continue
+          end
+          commands 4
+            printf "\n>>> Entered btf_encoder__delete\n"
+            bt 5
+            continue
+          end
+          commands 5
+            printf "\n>>> Entered cu__encode\n"
+            bt 5
+            # 尝试打印 DWARF 版本信息
+            if dwarf_version
+              printf "DWARF version: %d\n", dwarf_version
+            end
+            continue
+          end
+          commands 6
+            printf "\n>>> Entered dwarf_cu__create\n"
+            bt 5
+            info locals
+            continue
+          end
+          commands 7
+            printf "\n>>> Entered tag__recode_dwarf_type (可能出错)\n"
+            bt 5
+            info locals
+            continue
+          end
+          commands 8
+            printf "\n>>> Entered lexblock__recode_dwarf_types (可能出错)\n"
+            bt 5
+            info locals
+            continue
+          end
+          commands 9
+            printf "\n>>> Entered dwarf_get_units\n"
+            bt 3
+            continue
+          end
+          commands 10
+            printf "\n>>> Entered dwarf_begin / dwarf_begin_elf\n"
+            bt 3
+            # 尝试获取 DWARF 版本
+            shell echo "Checking DWARF version from debug_info..."
+            continue
+          end
+          
+          continue
+          quit
+          EOF
+          
+          gdb -batch -x gdb_commands.txt --args /usr/local/bin/pahole -J .tmp_vmlinux.btf 2>&1 | tee pahole_gdb.log
+          
+          echo "=========================================="
+          echo "GDB 跟踪完成"
+          echo "=========================================="
 
       - name: 收集跟踪文件和调试信息
-        # 与原工作流相同，省略
         run: |
           cd kernel_workspace
-          # ...
+          mkdir -p gdb_trace
+          
+          [ -f "pahole_gdb.log" ] && cp pahole_gdb.log gdb_trace/
+          [ -f "pahole_gdb_output.txt" ] && cp pahole_gdb_output.txt gdb_trace/
+          [ -f ".tmp_vmlinux.btf" ] && cp .tmp_vmlinux.btf gdb_trace/
+          [ -f "dwarf_info.txt" ] && cp dwarf_info.txt gdb_trace/
+          
+          echo "=== System Information ===" > gdb_trace/system_info.txt
+          uname -a >> gdb_trace/system_info.txt
+          echo "=== pahole version ===" >> gdb_trace/system_info.txt
+          /usr/local/bin/pahole --version >> gdb_trace/system_info.txt 2>&1
+          echo "=== pahole debug info ===" >> gdb_trace/system_info.txt
+          file /usr/local/bin/pahole >> gdb_trace/system_info.txt
+          echo "=== Library dependencies ===" >> gdb_trace/system_info.txt
+          ldd /usr/local/bin/pahole >> gdb_trace/system_info.txt
+          
+          echo "=== DWARF Library Versions ===" >> gdb_trace/system_info.txt
+          dpkg -l | grep -E "libdw|elfutils|dwarves" >> gdb_trace/system_info.txt 2>&1
+          echo "=== eu-readelf version ===" >> gdb_trace/system_info.txt
+          eu-readelf --version 2>&1 | head -1 >> gdb_trace/system_info.txt
+          
+          echo "=== .tmp_vmlinux.btf file info ===" >> gdb_trace/system_info.txt
+          ls -la gdb_trace/.tmp_vmlinux.btf 2>/dev/null || echo "文件不存在" >> gdb_trace/system_info.txt
+          file gdb_trace/.tmp_vmlinux.btf 2>/dev/null >> gdb_trace/system_info.txt
+          
+          echo "=== .tmp_vmlinux.btf sections ===" >> gdb_trace/system_info.txt
+          readelf -S gdb_trace/.tmp_vmlinux.btf 2>/dev/null >> gdb_trace/system_info.txt || echo "无法读取" >> gdb_trace/system_info.txt
+          
+          echo "=== DWARF Version Analysis ===" >> gdb_trace/system_info.txt
+          echo "Detecting DWARF version from .tmp_vmlinux.btf:" >> gdb_trace/system_info.txt
+          readelf -wi gdb_trace/.tmp_vmlinux.btf 2>/dev/null | grep -E "DW_TAG_compile_unit|DW_AT_producer|Version" | head -30 >> gdb_trace/system_info.txt
+          
+          # 使用 objdump 检测 DWARF 版本
+          echo "=== objdump DWARF info ===" >> gdb_trace/system_info.txt
+          objdump --dwarf=info gdb_trace/.tmp_vmlinux.btf 2>/dev/null | head -50 >> gdb_trace/system_info.txt
+          
+          echo "跟踪文件已收集到 gdb_trace 目录"
+          ls -la gdb_trace/
 
       - name: 上传 GDB 跟踪工件
         uses: actions/upload-artifact@v4
@@ -195,11 +369,11 @@ jobs:
           export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
           export KBUILD_VERBOSE=0
           export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
-
-          #LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
+          
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
             { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
-
+          
           echo "内核编译完成！"
 
       - name: 上传额外构建文件
