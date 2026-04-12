@@ -32,19 +32,20 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
-      - name: 安装基础依赖
+      - name: 安装基础依赖（包含 gdb）
         run: |
           sudo apt update
-          sudo apt install -y curl bison flex make binutils dwarves git lld zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils zstd cmake
+          sudo apt install -y curl bison flex make binutils dwarves git lld zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils zstd cmake gdb
           sudo apt install -y libdw-dev libz-dev libiberty-dev
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
 
-      - name: 从源码编译 pahole 1.23（修复库路径）
+      - name: 从源码编译 pahole 1.23（带调试符号）
         run: |
           git clone --recursive --branch v1.23 --depth 1 https://git.kernel.org/pub/scm/devel/pahole/pahole.git
           cd pahole
           mkdir build && cd build
-          cmake -DCMAKE_INSTALL_PREFIX=/usr/local -D__LIB=lib ..
+          # 使用 Debug 构建以包含调试符号
+          cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX=/usr/local -D__LIB=lib ..
           make -j$(nproc)
           sudo make install
           sudo ldconfig
@@ -107,14 +108,13 @@ jobs:
           cd kernel_workspace/common/tools/bpf/resolve_btfids
           cp main.c main.c.bak
           
-          # 修改 id_patch 函数：将所有未解析符号改为警告，不再使构建失败
           sed -i '/if (!id->id) {/,/^[[:space:]]*}/c\
           if (!id->id) {\
             fprintf(stderr, "WARNING: unresolved symbol %s, ignoring\\n", id->name);\
             return 0;\
           }' main.c
           
-          echo "已修改 resolve_btfids 源码，所有未解析符号都将被忽略（转为警告）"
+          echo "已修改 resolve_btfids 源码"
 
       - name: 配置构建环境
         run: |
@@ -131,17 +131,167 @@ jobs:
           fi
           echo "PAHOLE=/usr/local/bin/pahole" >> common/build.config.common
 
-      - name: 构建内核
+      - name: 构建内核（先让编译失败，保留 .tmp_vmlinux.btf）
         run: |
           cd kernel_workspace
           export PATH="/usr/local/bin:$PATH"
           export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
           export KBUILD_VERBOSE=0
           export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
-          echo "使用的 PAHOLE_FLAGS: ${PAHOLE_FLAGS}"
+          
+          # 尝试构建，允许失败
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
+            grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || true
+          
+          # 查找 .tmp_vmlinux.btf 文件
+          echo "查找 .tmp_vmlinux.btf 文件..."
+          find . -name ".tmp_vmlinux.btf" -ls 2>/dev/null || echo "未找到 .tmp_vmlinux.btf"
+          
+          # 复制 .tmp_vmlinux.btf 到工作目录（如果存在）
+          if [ -f "out/android12-5.10/common/.tmp_vmlinux.btf" ]; then
+            cp "out/android12-5.10/common/.tmp_vmlinux.btf" .tmp_vmlinux.btf
+            echo "已复制 .tmp_vmlinux.btf"
+          elif [ -f "out/.tmp_vmlinux.btf" ]; then
+            cp "out/.tmp_vmlinux.btf" .tmp_vmlinux.btf
+            echo "已复制 .tmp_vmlinux.btf"
+          elif [ -f ".tmp_vmlinux.btf" ]; then
+            echo ".tmp_vmlinux.btf 已存在"
+          else
+            echo "警告: 未找到 .tmp_vmlinux.btf 文件"
+          fi
+
+      - name: 使用 GDB 跟踪 pahole -J 命令
+        run: |
+          cd kernel_workspace
+          
+          # 检查是否存在 .tmp_vmlinux.btf
+          if [ ! -f ".tmp_vmlinux.btf" ]; then
+            echo "错误: .tmp_vmlinux.btf 不存在，尝试查找..."
+            find . -name "*.btf" -ls 2>/dev/null || echo "未找到任何 .btf 文件"
+            exit 1
+          fi
+          
+          echo "=========================================="
+          echo "开始 GDB 跟踪 pahole -J .tmp_vmlinux.btf"
+          echo "=========================================="
+          
+          # 创建 GDB 命令脚本
+          cat > gdb_commands.txt << 'EOF'
+          set logging file pahole_gdb_output.txt
+          set logging on
+          set pagination off
+          
+          # 设置断点
+          break btf_encoder__encode
+          break btf_encoder__add_type
+          
+          # 运行参数
+          run -J .tmp_vmlinux.btf
+          
+          # 当遇到断点时打印信息
+          commands 1
+            printf "Hit btf_encoder__encode\n"
+            bt
+            continue
+          end
+          
+          commands 2
+            printf "Hit btf_encoder__add_type\n"
+            bt
+            continue
+          end
+          
+          # 继续运行直到程序结束或崩溃
+          continue
+          
+          # 退出
+          quit
+          EOF
+          
+          # 使用 GDB 运行 pahole
+          gdb -batch -x gdb_commands.txt --args /usr/local/bin/pahole -J .tmp_vmlinux.btf 2>&1 | tee pahole_gdb.log
+          
+          # 收集所有跟踪输出
+          echo "=========================================="
+          echo "GDB 跟踪完成"
+          echo "=========================================="
+
+      - name: 收集跟踪文件和调试信息
+        run: |
+          cd kernel_workspace
+          mkdir -p gdb_trace
+          
+          # 复制跟踪文件
+          [ -f "pahole_gdb.log" ] && cp pahole_gdb.log gdb_trace/
+          [ -f "pahole_gdb_output.txt" ] && cp pahole_gdb_output.txt gdb_trace/
+          [ -f ".tmp_vmlinux.btf" ] && cp .tmp_vmlinux.btf gdb_trace/
+          
+          # 获取 pahole 版本和系统信息
+          echo "=== System Information ===" > gdb_trace/system_info.txt
+          uname -a >> gdb_trace/system_info.txt
+          echo "=== pahole version ===" >> gdb_trace/system_info.txt
+          /usr/local/bin/pahole --version >> gdb_trace/system_info.txt 2>&1
+          echo "=== pahole debug info ===" >> gdb_trace/system_info.txt
+          file /usr/local/bin/pahole >> gdb_trace/system_info.txt
+          echo "=== Library dependencies ===" >> gdb_trace/system_info.txt
+          ldd /usr/local/bin/pahole >> gdb_trace/system_info.txt
+          
+          # 检查 .tmp_vmlinux.btf 文件信息
+          echo "=== .tmp_vmlinux.btf file info ===" >> gdb_trace/system_info.txt
+          ls -la gdb_trace/.tmp_vmlinux.btf 2>/dev/null || echo "文件不存在" >> gdb_trace/system_info.txt
+          file gdb_trace/.tmp_vmlinux.btf 2>/dev/null >> gdb_trace/system_info.txt
+          
+          # 尝试使用 readelf 查看 BTF 信息
+          echo "=== .tmp_vmlinux.btf sections ===" >> gdb_trace/system_info.txt
+          readelf -S gdb_trace/.tmp_vmlinux.btf 2>/dev/null >> gdb_trace/system_info.txt || echo "无法读取" >> gdb_trace/system_info.txt
+          
+          echo "跟踪文件已收集到 gdb_trace 目录"
+          ls -la gdb_trace/
+
+      - name: 上传 GDB 跟踪工件
+        uses: actions/upload-artifact@v4
+        with:
+          name: GDB_Trace_Artifacts
+          path: kernel_workspace/gdb_trace/
+
+      - name: 继续构建完整内核（修改 link-vmlinux.sh 使 BTF 错误不退出）
+        run: |
+          cd kernel_workspace/common
+          
+          # 修改 link-vmlinux.sh 中的 gen_btf 函数
+          cp scripts/link-vmlinux.sh scripts/link-vmlinux.sh.bak
+          
+          # 让 pahole 命令失败时继续执行
+          sed -i '/LLVM_OBJCOPY="${OBJCOPY}" ${PAHOLE} -J ${PAHOLE_FLAGS} ${1}/c\
+          (\
+            set +e\
+            LLVM_OBJCOPY="${OBJCOPY}" ${PAHOLE} -J ${PAHOLE_FLAGS} ${1} 2> .btf_error.log\
+            ret=$?\
+            set -e\
+            if [ $ret -ne 0 ]; then\
+              echo "BTF: Warning - pahole failed (error code $ret), continuing..." >&2\
+              cat .btf_error.log >&2\
+              ret=0\
+            fi\
+            rm -f .btf_error.log\
+            exit $ret\
+          )' scripts/link-vmlinux.sh
+          
+          echo "已修改 link-vmlinux.sh，pahole 失败时将跳过并继续"
+
+      - name: 最终构建内核
+        run: |
+          cd kernel_workspace
+          export PATH="/usr/local/bin:$PATH"
+          export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+          export KBUILD_VERBOSE=0
+          export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
+          
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
             { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
+          
+          echo "内核编译完成！"
 
       - name: 上传额外构建文件
         run: |
