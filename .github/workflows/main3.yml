@@ -65,6 +65,13 @@ jobs:
           sudo make install
           sudo ldconfig
 
+      - name: 安装 repo 工具
+        run: |
+          curl -s https://mirrors.tuna.tsinghua.edu.cn/git/git-repo > ~/repo
+          chmod a+x ~/repo
+          sudo mv ~/repo /usr/local/bin/repo
+          git config --global repo.url https://mirrors.tuna.tsinghua.edu.cn/git/git-repo
+
       - name: 缓存内核源码
         id: cache-kernel
         uses: actions/cache@v4
@@ -114,7 +121,6 @@ jobs:
             echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
             echo "CONFIG_DEBUG_INFO=y" >> "$DEFCONFIG"
             echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG"
-            echo "CONFIG_MALI_PLATFORM_NAME=\"mt6895\"" >> "$DEFCONFIG"
           fi
 
       - name: 添加内核后缀
@@ -135,19 +141,45 @@ jobs:
             return 0;\
           }' main.c || true
 
+      - name: 修复 Mali GPU 驱动构建错误
+        run: |
+          cd kernel_workspace
+          
+          # 设置 MALI_PLATFORM_NAME
+          export MALI_PLATFORM_NAME="mt6895"
+          
+          # 修复 Makefile.clean 中的错误
+          if [ -f "common/scripts/Makefile.clean" ]; then
+            sed -i '/Makefile/d' common/scripts/Makefile.clean
+          fi
+          
+          # 修复 Mali GPU Makefile 中的 Kbuild 路径
+          MALI_MAKEFILE="common/drivers/gpu/mediatek/mali-valhall/gpu/arm/midgard/Makefile"
+          if [ -f "$MALI_MAKEFILE" ]; then
+            sed -i 's# include $(KO_CODE_PATH)/platform/$(MALI_PLATFORM_DIR)/Kbuild# include $(KO_CODE_PATH)/platform/mt6895/Kbuild#g' "$MALI_MAKEFILE"
+            echo "已修复 Mali GPU Makefile"
+          fi
+          
+          # 创建缺失的 platform 目录链接（如果需要）
+          PLATFORM_DIR="common/drivers/gpu/mediatek/mali-valhall/gpu/arm/midgard/platform"
+          if [ ! -d "$PLATFORM_DIR/mt6895" ] && [ -d "$PLATFORM_DIR/mt6885" ]; then
+            ln -sf mt6885 "$PLATFORM_DIR/mt6895" 2>/dev/null || true
+            echo "创建 platform/mt6895 符号链接"
+          fi
+
       - name: 配置构建环境
         run: |
           cd kernel_workspace
           CLANG_PATH="prebuilts-master/clang/host/linux-x86/clang-r584948b/bin"
+          export PATH="$CLANG_PATH:$PATH"
+          export MALI_PLATFORM_NAME="mt6895"
+          
           if [ -f "common/build.config.common" ]; then
             sed -i "s|CLANG_PREBUILT_BIN=.*|CLANG_PREBUILT_BIN=$CLANG_PATH|" common/build.config.common 2>/dev/null || true
             echo "CC=clang" >> common/build.config.common
             echo "PAHOLE=/usr/local/bin/pahole" >> common/build.config.common
+            echo "MALI_PLATFORM_NAME=mt6895" >> common/build.config.common
           fi
-          
-          # 设置 Mali 平台
-          echo "MALI_PLATFORM_NAME=mt6895" >> common/build.config.common
-          echo "CONFIG_MALI_PLATFORM_NAME=mt6895" >> common/build.config.common
 
       - name: 构建内核
         id: build_kernel
@@ -155,19 +187,10 @@ jobs:
           cd kernel_workspace
           export PATH="/usr/local/bin:$PATH"
           export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
-          export KBUILD_VERBOSE=0
-          export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
           export MALI_PLATFORM_NAME="mt6895"
           
-          # 使用构建脚本
-          if [ -f "build/build.sh" ]; then
-            LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
-              grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
-              { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
-          else
-            echo "错误: build/build.sh 不存在"
-            exit 1
-          fi
+          # 使用官方构建脚本
+          BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | tee build_output.log
           
           # 检查 Image 是否存在
           IMAGE_FILE=$(find . -name "Image" | head -1)
@@ -179,6 +202,8 @@ jobs:
           else
             echo "build_success=false" >> $GITHUB_OUTPUT
             echo "内核构建失败"
+            # 输出错误信息
+            tail -100 build_output.log
           fi
 
       - name: 设置输出
