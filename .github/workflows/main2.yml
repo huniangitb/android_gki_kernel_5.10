@@ -39,12 +39,11 @@ jobs:
           sudo apt install -y libdw-dev libz-dev libiberty-dev
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
 
-      - name: 从源码编译 pahole 1.23（带调试符号）
+      - name: 从源码编译 pahole master（带调试符号）
         run: |
-          git clone --recursive --branch v1.23 --depth 1 https://git.kernel.org/pub/scm/devel/pahole/pahole.git
+          git clone --recursive --branch master --depth 1 https://git.kernel.org/pub/scm/devel/pahole/pahole.git
           cd pahole
           mkdir build && cd build
-          # 使用 Debug 构建以包含调试符号
           cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX=/usr/local -D__LIB=lib ..
           make -j$(nproc)
           sudo make install
@@ -139,15 +138,12 @@ jobs:
           export KBUILD_VERBOSE=0
           export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
           
-          # 尝试构建，允许失败
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || true
           
-          # 查找 .tmp_vmlinux.btf 文件
           echo "查找 .tmp_vmlinux.btf 文件..."
           find . -name ".tmp_vmlinux.btf" -ls 2>/dev/null || echo "未找到 .tmp_vmlinux.btf"
           
-          # 复制 .tmp_vmlinux.btf 到工作目录（如果存在）
           if [ -f "out/android12-5.10/common/.tmp_vmlinux.btf" ]; then
             cp "out/android12-5.10/common/.tmp_vmlinux.btf" .tmp_vmlinux.btf
             echo "已复制 .tmp_vmlinux.btf"
@@ -160,11 +156,10 @@ jobs:
             echo "警告: 未找到 .tmp_vmlinux.btf 文件"
           fi
 
-      - name: 使用 GDB 跟踪 pahole -J 命令
+      - name: 使用 GDB 跟踪 pahole -J 命令（增强断点）
         run: |
           cd kernel_workspace
           
-          # 检查是否存在 .tmp_vmlinux.btf
           if [ ! -f ".tmp_vmlinux.btf" ]; then
             echo "错误: .tmp_vmlinux.btf 不存在，尝试查找..."
             find . -name "*.btf" -ls 2>/dev/null || echo "未找到任何 .btf 文件"
@@ -175,43 +170,78 @@ jobs:
           echo "开始 GDB 跟踪 pahole -J .tmp_vmlinux.btf"
           echo "=========================================="
           
-          # 创建 GDB 命令脚本
           cat > gdb_commands.txt << 'EOF'
           set logging file pahole_gdb_output.txt
           set logging on
           set pagination off
           
-          # 设置断点
+          # 关键断点：BTF 编码流程
+          break btf_encoder__new
           break btf_encoder__encode
           break btf_encoder__add_type
+          break btf_encoder__delete
+          
+          # DWARF 处理相关断点
+          break cu__encode
+          break dwarf_cu__create
+          break tag__recode_dwarf_type
+          break lexblock__recode_dwarf_types
           
           # 运行参数
           run -J .tmp_vmlinux.btf
           
-          # 当遇到断点时打印信息
+          # 断点命令：打印调用栈和局部变量（仅当需要时）
           commands 1
-            printf "Hit btf_encoder__encode\n"
-            bt
+            printf "\n>>> Entered btf_encoder__new\n"
+            bt 5
             continue
           end
-          
           commands 2
-            printf "Hit btf_encoder__add_type\n"
-            bt
+            printf "\n>>> Entered btf_encoder__encode\n"
+            bt 5
+            info locals
+            continue
+          end
+          commands 3
+            printf "\n>>> Entered btf_encoder__add_type\n"
+            bt 5
+            info locals
+            continue
+          end
+          commands 4
+            printf "\n>>> Entered btf_encoder__delete\n"
+            bt 5
+            continue
+          end
+          commands 5
+            printf "\n>>> Entered cu__encode\n"
+            bt 5
+            continue
+          end
+          commands 6
+            printf "\n>>> Entered dwarf_cu__create\n"
+            bt 5
+            continue
+          end
+          commands 7
+            printf "\n>>> Entered tag__recode_dwarf_type (可能出错)\n"
+            bt 5
+            info locals
+            continue
+          end
+          commands 8
+            printf "\n>>> Entered lexblock__recode_dwarf_types (可能出错)\n"
+            bt 5
+            info locals
             continue
           end
           
-          # 继续运行直到程序结束或崩溃
           continue
-          
-          # 退出
           quit
           EOF
           
-          # 使用 GDB 运行 pahole
           gdb -batch -x gdb_commands.txt --args /usr/local/bin/pahole -J .tmp_vmlinux.btf 2>&1 | tee pahole_gdb.log
           
-          # 收集所有跟踪输出
           echo "=========================================="
           echo "GDB 跟踪完成"
           echo "=========================================="
@@ -221,12 +251,10 @@ jobs:
           cd kernel_workspace
           mkdir -p gdb_trace
           
-          # 复制跟踪文件
           [ -f "pahole_gdb.log" ] && cp pahole_gdb.log gdb_trace/
           [ -f "pahole_gdb_output.txt" ] && cp pahole_gdb_output.txt gdb_trace/
           [ -f ".tmp_vmlinux.btf" ] && cp .tmp_vmlinux.btf gdb_trace/
           
-          # 获取 pahole 版本和系统信息
           echo "=== System Information ===" > gdb_trace/system_info.txt
           uname -a >> gdb_trace/system_info.txt
           echo "=== pahole version ===" >> gdb_trace/system_info.txt
@@ -236,12 +264,10 @@ jobs:
           echo "=== Library dependencies ===" >> gdb_trace/system_info.txt
           ldd /usr/local/bin/pahole >> gdb_trace/system_info.txt
           
-          # 检查 .tmp_vmlinux.btf 文件信息
           echo "=== .tmp_vmlinux.btf file info ===" >> gdb_trace/system_info.txt
           ls -la gdb_trace/.tmp_vmlinux.btf 2>/dev/null || echo "文件不存在" >> gdb_trace/system_info.txt
           file gdb_trace/.tmp_vmlinux.btf 2>/dev/null >> gdb_trace/system_info.txt
           
-          # 尝试使用 readelf 查看 BTF 信息
           echo "=== .tmp_vmlinux.btf sections ===" >> gdb_trace/system_info.txt
           readelf -S gdb_trace/.tmp_vmlinux.btf 2>/dev/null >> gdb_trace/system_info.txt || echo "无法读取" >> gdb_trace/system_info.txt
           
@@ -254,30 +280,7 @@ jobs:
           name: GDB_Trace_Artifacts
           path: kernel_workspace/gdb_trace/
 
-      - name: 继续构建完整内核（修改 link-vmlinux.sh 使 BTF 错误不退出）
-        run: |
-          cd kernel_workspace/common
-          
-          # 修改 link-vmlinux.sh 中的 gen_btf 函数
-          cp scripts/link-vmlinux.sh scripts/link-vmlinux.sh.bak
-          
-          # 让 pahole 命令失败时继续执行
-          sed -i '/LLVM_OBJCOPY="${OBJCOPY}" ${PAHOLE} -J ${PAHOLE_FLAGS} ${1}/c\
-          (\
-            set +e\
-            LLVM_OBJCOPY="${OBJCOPY}" ${PAHOLE} -J ${PAHOLE_FLAGS} ${1} 2> .btf_error.log\
-            ret=$?\
-            set -e\
-            if [ $ret -ne 0 ]; then\
-              echo "BTF: Warning - pahole failed (error code $ret), continuing..." >&2\
-              cat .btf_error.log >&2\
-              ret=0\
-            fi\
-            rm -f .btf_error.log\
-            exit $ret\
-          )' scripts/link-vmlinux.sh
-          
-          echo "已修改 link-vmlinux.sh，pahole 失败时将跳过并继续"
+      # 已删除“继续构建完整内核”步骤，因为 resolve_btfids.c 的修改已使 BTF 错误变为警告
 
       - name: 最终构建内核
         run: |
