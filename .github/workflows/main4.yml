@@ -38,8 +38,10 @@ jobs:
           sudo apt install -y curl bison flex make binutils dwarves git lld zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils zstd cmake gdb
           sudo apt install -y libdw-dev libz-dev libiberty-dev
           sudo apt install -y libelf-dev pkg-config
+          # 确保 printf 在常见路径下可用
+          sudo ln -sf /usr/bin/printf /bin/printf
+          sudo ln -sf /usr/bin/printf /usr/local/bin/printf
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
-          sudo ln -sf /usr/bin/printf /bin/printf 2>/dev/null || true
 
       - name: 从源码编译 pahole master（带调试符号）
         run: |
@@ -112,45 +114,46 @@ jobs:
         run: |
           cd kernel_workspace
           
-          # 确保 printf 可用
-          sudo ln -sf /usr/bin/printf /bin/printf 2>/dev/null || true
-          sudo ln -sf /usr/bin/printf /usr/bin/printf 2>/dev/null || true
+          # 再次确保 printf 可用
+          sudo ln -sf /usr/bin/printf /bin/printf
+          sudo ln -sf /usr/bin/printf /usr/local/bin/printf
           
-          # 修复 resolve_btfids 的 Makefile
+          # 修复 resolve_btfids 的 Makefile（更彻底）
           RESOLVE_BTFIDS_DIR="common/tools/bpf/resolve_btfids"
           if [ -f "$RESOLVE_BTFIDS_DIR/Makefile" ]; then
-            # 备份原文件
             cp "$RESOLVE_BTFIDS_DIR/Makefile" "$RESOLVE_BTFIDS_DIR/Makefile.bak"
-            
-            # 修改 Makefile 添加 libelf 路径
-            sed -i 's|^\(CFLAGS =\)|\1 -I/usr/include -I/usr/local/include|' "$RESOLVE_BTFIDS_DIR/Makefile"
-            sed -i 's|^\(LDFLAGS =\)|\1 -L/usr/lib/x86_64-linux-gnu -lelf|' "$RESOLVE_BTFIDS_DIR/Makefile"
-            
-            # 如果上面的模式匹配失败，尝试在文件末尾添加
-            if ! grep -q "CFLAGS.*-I/usr/include" "$RESOLVE_BTFIDS_DIR/Makefile"; then
-              echo "CFLAGS += -I/usr/include -I/usr/local/include" >> "$RESOLVE_BTFIDS_DIR/Makefile"
-              echo "LDFLAGS += -L/usr/lib/x86_64-linux-gnu -lelf" >> "$RESOLVE_BTFIDS_DIR/Makefile"
-            fi
+            # 强制添加 CFLAGS 和 LDFLAGS
+            sed -i '/^CFLAGS ?=/c\CFLAGS = -I/usr/include -I/usr/local/include' "$RESOLVE_BTFIDS_DIR/Makefile"
+            sed -i '/^LDFLAGS ?=/c\LDFLAGS = -L/usr/lib/x86_64-linux-gnu -lelf' "$RESOLVE_BTFIDS_DIR/Makefile"
+            # 如果上面不成功，直接追加
+            grep -q "CFLAGS.*-I/usr/include" "$RESOLVE_BTFIDS_DIR/Makefile" || echo "CFLAGS += -I/usr/include -I/usr/local/include" >> "$RESOLVE_BTFIDS_DIR/Makefile"
+            grep -q "LDFLAGS.*-lelf" "$RESOLVE_BTFIDS_DIR/Makefile" || echo "LDFLAGS += -L/usr/lib/x86_64-linux-gnu -lelf" >> "$RESOLVE_BTFIDS_DIR/Makefile"
+          fi
+          
+          # 同时修复 libbpf 的 Makefile（如果存在）
+          LIBBPF_DIR="common/tools/lib/bpf"
+          if [ -f "$LIBBPF_DIR/Makefile" ]; then
+            grep -q "EXTRA_CFLAGS.*-I/usr/include" "$LIBBPF_DIR/Makefile" || echo "EXTRA_CFLAGS += -I/usr/include" >> "$LIBBPF_DIR/Makefile"
+            grep -q "LDFLAGS.*-lelf" "$LIBBPF_DIR/Makefile" || echo "LDFLAGS += -L/usr/lib/x86_64-linux-gnu -lelf" >> "$LIBBPF_DIR/Makefile"
           fi
           
           # 验证 libelf
           echo "验证 libelf 安装："
           pkg-config --libs --cflags libelf 2>/dev/null || echo "libelf.pc 未找到"
-          ls -la /usr/lib/x86_64-linux-gnu/libelf.so* 2>/dev/null || echo "检查 libelf.so"
-          ls -la /usr/lib/libelf.so* 2>/dev/null || echo "检查备用路径"
+          ls -la /usr/lib/x86_64-linux-gnu/libelf.so* || echo "检查 libelf.so"
 
       - name: 配置构建环境（自动探测 Clang 并写入配置）
         run: |
           cd kernel_workspace
 
           # 1. 禁用 regalloc advisor
-          sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
+          #sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
 
-          # 2. 自动查找 clang 可执行文件（任意位置）
+          # 2. 自动查找 clang 可执行文件
           CLANG_BIN=$(find . -path "*/bin/clang" -type f -executable 2>/dev/null | head -1)
           if [ -z "$CLANG_BIN" ]; then
-            echo "错误：未找到 clang 可执行文件，请检查 repo sync 是否完整"
-            find . -name "clang" -type f 2>/dev/null || echo "无 clang 文件"
+            echo "错误：未找到 clang 可执行文件"
+            find . -name "clang" -type f 2>/dev/null
             exit 1
           fi
           CLANG_DIR=$(dirname "$CLANG_BIN")
@@ -170,7 +173,7 @@ jobs:
           echo "CC=clang" >> "$CONFIG_FILE"
           echo "KBUILD_VERBOSE=0" >> "$CONFIG_FILE"
 
-          # 5. 修复 link-vmlinux.sh 中的 dd 路径问题
+          # 5. 修复 link-vmlinux.sh 中的 dd 路径
           LINK_VMLINUX="common/scripts/link-vmlinux.sh"
           if [[ -f "$LINK_VMLINUX" ]]; then
             sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
@@ -179,19 +182,26 @@ jobs:
           # 6. 设置 pahole 路径
           echo "PAHOLE=/usr/local/bin/pahole" >> "$CONFIG_FILE"
           
-          # 注意：不再设置 HOSTCFLAGS/HOSTLDFLAGS，因为已经单独修复了 resolve_btfids/Makefile
+          # 7. 添加主机编译环境变量（关键修复）
+          echo "export PATH=\"/usr/local/bin:/usr/bin:/bin:\$PATH\"" >> "$CONFIG_FILE"
+          echo "export HOSTCFLAGS=\"-I/usr/include\"" >> "$CONFIG_FILE"
+          echo "export HOSTLDFLAGS=\"-L/usr/lib/x86_64-linux-gnu -lelf\"" >> "$CONFIG_FILE"
+          echo "export HOSTLOADLIBES=\"-lelf\"" >> "$CONFIG_FILE"
 
       - name: 构建内核（先让编译失败，保留 .tmp_vmlinux.btf）
         run: |
           cd kernel_workspace
-          # 设置完整的 PATH
+          # 设置完整的 PATH 和编译标志
           export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
           export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+          export HOSTCFLAGS="-I/usr/include"
+          export HOSTLDFLAGS="-L/usr/lib/x86_64-linux-gnu -lelf"
           export KBUILD_VERBOSE=0
           export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
           
-          # 确保 printf 可用
-          sudo ln -sf /usr/bin/printf /bin/printf 2>/dev/null || true
+          # 确保 printf 在子进程中可用
+          sudo ln -sf /usr/bin/printf /bin/printf
+          sudo ln -sf /usr/bin/printf /usr/local/bin/printf
           
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || true
@@ -225,7 +235,6 @@ jobs:
           echo "检测 DWARF 版本信息"
           echo "=========================================="
           
-          # 使用 readelf 检测 DWARF 版本
           echo "=== DWARF Version Detection ===" > dwarf_info.txt
           echo "File: .tmp_vmlinux.btf" >> dwarf_info.txt
           readelf -S .tmp_vmlinux.btf | grep -E "debug_info|debug_abbrev|debug_line" >> dwarf_info.txt 2>&1
@@ -236,7 +245,6 @@ jobs:
           echo "=== DWARF Version from debug_info section ===" >> dwarf_info.txt
           readelf -wi .tmp_vmlinux.btf 2>/dev/null | grep -E "DW_TAG_compile_unit|DW_AT_producer|DW_AT_language|Version" | head -20 >> dwarf_info.txt
           
-          # 使用 llvm-dwarfdump 如果可用
           if command -v llvm-dwarfdump &> /dev/null; then
             echo "=== llvm-dwarfdump output ===" >> dwarf_info.txt
             llvm-dwarfdump --version >> dwarf_info.txt 2>&1
@@ -254,33 +262,24 @@ jobs:
           set logging on
           set pagination off
           
-          # 打印 DWARF 相关库版本
           printf "\n=== DWARF Library Information ===\n"
-          # 尝试获取 libdw 版本
           shell printf "libdw version: " && (dpkg -l | grep libdw-dev | awk '{print $3}' || echo "unknown")
           shell printf "elfutils version: " && (eu-readelf --version 2>&1 | head -1 || echo "unknown")
           
-          # 关键断点：BTF 编码流程
           break btf_encoder__new
           break btf_encoder__encode
           break btf_encoder__add_type
           break btf_encoder__delete
-          
-          # DWARF 处理相关断点
           break cu__encode
           break dwarf_cu__create
           break tag__recode_dwarf_type
           break lexblock__recode_dwarf_types
-          
-          # 添加 DWARF 版本相关断点
           break dwarf_get_units
           break dwarf_begin
           break dwarf_begin_elf
           
-          # 运行参数
           run -J .tmp_vmlinux.btf
           
-          # 断点命令：打印调用栈和局部变量
           commands 1
             printf "\n>>> Entered btf_encoder__new\n"
             bt 5
@@ -306,7 +305,6 @@ jobs:
           commands 5
             printf "\n>>> Entered cu__encode\n"
             bt 5
-            # 尝试打印 DWARF 版本信息
             if dwarf_version
               printf "DWARF version: %d\n", dwarf_version
             end
@@ -338,7 +336,6 @@ jobs:
           commands 10
             printf "\n>>> Entered dwarf_begin / dwarf_begin_elf\n"
             bt 3
-            # 尝试获取 DWARF 版本
             shell echo "Checking DWARF version from debug_info..."
             continue
           end
@@ -357,7 +354,6 @@ jobs:
         run: |
           cd kernel_workspace
           mkdir -p gdb_trace
-          
           [ -f "pahole_gdb.log" ] && cp pahole_gdb.log gdb_trace/
           [ -f "pahole_gdb_output.txt" ] && cp pahole_gdb_output.txt gdb_trace/
           [ -f ".tmp_vmlinux.btf" ] && cp .tmp_vmlinux.btf gdb_trace/
@@ -371,25 +367,17 @@ jobs:
           file /usr/local/bin/pahole >> gdb_trace/system_info.txt
           echo "=== Library dependencies ===" >> gdb_trace/system_info.txt
           ldd /usr/local/bin/pahole >> gdb_trace/system_info.txt
-          
           echo "=== DWARF Library Versions ===" >> gdb_trace/system_info.txt
           dpkg -l | grep -E "libdw|elfutils|dwarves" >> gdb_trace/system_info.txt 2>&1
           echo "=== eu-readelf version ===" >> gdb_trace/system_info.txt
           eu-readelf --version 2>&1 | head -1 >> gdb_trace/system_info.txt
-          
           echo "=== .tmp_vmlinux.btf file info ===" >> gdb_trace/system_info.txt
           ls -la gdb_trace/.tmp_vmlinux.btf 2>/dev/null || echo "文件不存在" >> gdb_trace/system_info.txt
           file gdb_trace/.tmp_vmlinux.btf 2>/dev/null >> gdb_trace/system_info.txt
-          
           echo "=== .tmp_vmlinux.btf sections ===" >> gdb_trace/system_info.txt
           readelf -S gdb_trace/.tmp_vmlinux.btf 2>/dev/null >> gdb_trace/system_info.txt || echo "无法读取" >> gdb_trace/system_info.txt
-          
           echo "=== DWARF Version Analysis ===" >> gdb_trace/system_info.txt
-          echo "Detecting DWARF version from .tmp_vmlinux.btf:" >> gdb_trace/system_info.txt
           readelf -wi gdb_trace/.tmp_vmlinux.btf 2>/dev/null | grep -E "DW_TAG_compile_unit|DW_AT_producer|Version" | head -30 >> gdb_trace/system_info.txt
-          
-          # 使用 objdump 检测 DWARF 版本
-          echo "=== objdump DWARF info ===" >> gdb_trace/system_info.txt
           objdump --dwarf=info gdb_trace/.tmp_vmlinux.btf 2>/dev/null | head -50 >> gdb_trace/system_info.txt
           
           echo "跟踪文件已收集到 gdb_trace 目录"
@@ -404,14 +392,15 @@ jobs:
       - name: 最终构建内核
         run: |
           cd kernel_workspace
-          # 设置完整的 PATH
           export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
           export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+          export HOSTCFLAGS="-I/usr/include"
+          export HOSTLDFLAGS="-L/usr/lib/x86_64-linux-gnu -lelf"
           export KBUILD_VERBOSE=0
           export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
           
-          # 确保 printf 可用
-          sudo ln -sf /usr/bin/printf /bin/printf 2>/dev/null || true
+          sudo ln -sf /usr/bin/printf /bin/printf
+          sudo ln -sf /usr/bin/printf /usr/local/bin/printf
           
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
