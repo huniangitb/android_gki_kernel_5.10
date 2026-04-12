@@ -1,0 +1,378 @@
+name: kerne-cust-esk
+env:
+  TZ: Asia/Shanghai
+  CPU: 'mt6895'
+  FEIL: 'redmi+xiaomi'
+  ANDROID_VERSION: 'android12'
+  KERNEL_VERSION: '5.10.246'
+  KERNEL_NAME: 'cust'
+  REPO_URL: 'https://mirrors.tuna.tsinghua.edu.cn/git/git-repo'
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_suffix:
+        description: '内核后缀(留空默认,开头别加连字符)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 最大化建筑空间
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+          swap-size-mb: 8192
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: 安装基础依赖（包含 gdb）
+        run: |
+          sudo apt update
+          sudo apt install -y curl bison flex make binutils dwarves git lld zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils zstd cmake gdb
+          sudo apt install -y libdw-dev libz-dev libiberty-dev
+          sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
+
+      - name: 缓存 pahole 源码
+        id: cache-pahole
+        uses: actions/cache@v4
+        with:
+          path: pahole
+          key: pahole-master-${{ runner.os }}-${{ hashFiles('pahole/.git') }}
+          restore-keys: |
+            pahole-master-${{ runner.os }}-
+
+      - name: 从源码编译 pahole master（带调试符号）
+        if: steps.cache-pahole.outputs.cache-hit != 'true'
+        run: |
+          git clone --recursive --branch master --depth 1 https://git.kernel.org/pub/scm/devel/pahole/pahole.git
+          cd pahole
+          mkdir build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX=/usr/local -D__LIB=lib ..
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+          /usr/local/bin/pahole --version
+          ls -la /usr/local/lib/libdwarves*.so
+
+      - name: 使用缓存的 pahole
+        if: steps.cache-pahole.outputs.cache-hit == 'true'
+        run: |
+          cd pahole/build
+          sudo make install
+          sudo ldconfig
+          /usr/local/bin/pahole --version
+
+      - name: 缓存 repo 工具
+        id: cache-repo
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/repo
+          key: repo-tool-${{ runner.os }}
+
+      - name: 安装 repo 工具
+        if: steps.cache-repo.outputs.cache-hit != 'true'
+        run: |
+          curl -s https://mirrors.tuna.tsinghua.edu.cn/git/git-repo > ~/repo
+          chmod a+x ~/repo
+          sudo mv ~/repo /usr/local/bin/repo
+          git config --global repo.url https://mirrors.tuna.tsinghua.edu.cn/git/git-repo
+
+      - name: 缓存内核源码（新仓库）
+        id: cache-kernel
+        uses: actions/cache@v4
+        with:
+          path: kernel_workspace/common
+          key: kernel-mt6895-16.2-rebase-${{ runner.os }}-${{ hashFiles('kernel_workspace/common/.git') }}
+          restore-keys: |
+            kernel-mt6895-16.2-rebase-${{ runner.os }}-
+
+      - name: 缓存预打包工具包
+        id: cache-toolpack
+        uses: actions/cache@v4
+        with:
+          path: kernel_workspace/common-android12-5.10.tar.zst
+          key: toolpack-${{ runner.os }}
+
+      - name: 初始化源码仓库（预打包工具包 + 新内核源码）
+        run: |
+          rm -rf kernel_workspace && mkdir kernel_workspace && cd kernel_workspace
+          
+          # 缓存工具包
+          if [ ! -f "common-android12-5.10.tar.zst" ]; then
+            wget -q -c --show-progress --timeout=30 --tries=30 \
+              https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/common-android12-5.10.tar.zst \
+              -O common-android12-5.10.tar.zst
+          fi
+          
+          tar -I zstd -xf common-android12-5.10.tar.zst
+          
+          # 如果内核源码没有缓存，则克隆新仓库
+          if [ ! -d "common" ]; then
+            git clone --depth=1 --branch 16.2-rebase https://github.com/ESK-Project/android_kernel_xiaomi_mt6895 common
+          fi
+          
+          # 以下操作可能在新源码中不存在，忽略错误
+          rm common/android/abi_gki_protected_exports_* 2>/dev/null || true
+          for f in common/scripts/setlocalversion; do
+            sed -i 's/ -dirty//g' "$f" 2>/dev/null || true
+            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f" 2>/dev/null || true
+          done
+
+      - name: 缓存 Clang 工具链
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: kernel_workspace/prebuilts-master/clang/host/linux-x86/clang-r584948b
+          key: clang-r584948b-${{ runner.os }}
+
+      - name: 下载并安装自定义 Clang
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          cd kernel_workspace
+          wget -q -c --show-progress https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz -O clang-r584948b.tar.gz
+          mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
+          tar -xzf clang-r584948b.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
+
+      - name: 修改内核配置
+        run: |
+          cd kernel_workspace
+          DEFCONFIG_PATH="common/arch/arm64/configs/gki_defconfig"
+          # 如果新仓库没有 gki_defconfig，尝试其他常见路径
+          if [ ! -f "$DEFCONFIG_PATH" ]; then
+            DEFCONFIG_PATH=$(find common/arch/arm64/configs -name "*defconfig" | head -1)
+            echo "使用 defconfig: $DEFCONFIG_PATH"
+          fi
+          if [ -n "$DEFCONFIG_PATH" ] && [ -f "$DEFCONFIG_PATH" ]; then
+            echo -e "\n# Custom additions" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
+            sed -i '/^CONFIG_DEBUG_INFO\b/d' "$DEFCONFIG_PATH"
+            sed -i '/^# CONFIG_DEBUG_INFO is not set\b/d' "$DEFCONFIG_PATH"
+            sed -i '/^CONFIG_DEBUG_INFO_BTF\b/d' "$DEFCONFIG_PATH"
+            echo "CONFIG_DEBUG_INFO=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG_PATH"
+          else
+            echo "警告: 未找到 defconfig 文件，跳过配置修改"
+          fi
+
+      - name: 添加内核后缀
+        run: |
+          cd kernel_workspace
+          suffix="${{ github.event.inputs.kernel_suffix }}"
+          [ -z "$suffix" ] && suffix="${{ env.KERNEL_NAME }}"
+          for f in ./common/scripts/setlocalversion; do
+            if [ -f "$f" ]; then
+              sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f" 2>/dev/null || true
+            fi
+          done
+
+      - name: 修补 resolve_btfids.c（将所有未解析符号改为警告）
+        run: |
+          cd kernel_workspace/common/tools/bpf/resolve_btfids
+          if [ -f main.c ]; then
+            cp main.c main.c.bak
+            sed -i '/if (!id->id) {/,/^[[:space:]]*}/c\
+            if (!id->id) {\
+              fprintf(stderr, "WARNING: unresolved symbol %s, ignoring\\n", id->name);\
+              return 0;\
+            }' main.c
+            echo "已修改 resolve_btfids 源码"
+          else
+            echo "警告: resolve_btfids/main.c 不存在，跳过修补"
+          fi
+
+      - name: 配置构建环境
+        run: |
+          cd kernel_workspace
+          sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile 2>/dev/null || true
+          CLANG_REL_PATH="prebuilts-master/clang/host/linux-x86/clang-r584948b/bin"
+          if [ -f "common/build.config.common" ]; then
+            sed -i "s|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=$CLANG_REL_PATH|" common/build.config.common 2>/dev/null || true
+            sed -i 's/check_defconfig//' ./common/build.config.gki 2>/dev/null || true
+            echo "CC=clang" >> common/build.config.common
+            echo "KBUILD_VERBOSE=0" >> common/build.config.common
+            echo "PAHOLE=/usr/local/bin/pahole" >> common/build.config.common
+          else
+            # 如果没有 build.config，尝试设置环境变量
+            echo "没有 build.config，将通过环境变量配置"
+          fi
+          LINK_VMLINUX="common/scripts/link-vmlinux.sh"
+          if [[ -f "$LINK_VMLINUX" ]]; then
+            sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX" 2>/dev/null || true
+          fi
+
+      - name: 构建内核（唯一构建步骤）
+        id: kernel_build
+        run: |
+          cd kernel_workspace
+          export PATH="/usr/local/bin:$PATH"
+          export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+          export KBUILD_VERBOSE=0
+          export PAHOLE_FLAGS="--skip_encoding_btf_inconsistent_proto --skip_encoding_btf_vars"
+          
+          # 尝试使用 GKI 构建脚本，如果不存在则直接 make
+          if [ -f "build/build.sh" ]; then
+            LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | tee build_output.log
+          else
+            cd common
+            make ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- -j$(nproc) 2>&1 | tee ../build_output.log
+            cd ..
+          fi
+          
+          # 检查构建是否成功
+          if [ -f "common/arch/arm64/boot/Image" ] || [ -f "out/android12-5.10/common/arch/arm64/boot/Image" ]; then
+            echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
+            echo "内核构建成功"
+          else
+            echo "BUILD_SUCCESS=false" >> $GITHUB_ENV
+            echo "内核构建失败"
+            # 仍然尝试复制 .tmp_vmlinux.btf 用于调试
+          fi
+          
+          # 查找并保存 .tmp_vmlinux.btf（如果存在）
+          find . -name ".tmp_vmlinux.btf" -exec cp {} .tmp_vmlinux.btf \; 2>/dev/null || true
+          if [ -f "out/android12-5.10/common/.tmp_vmlinux.btf" ]; then
+            cp "out/android12-5.10/common/.tmp_vmlinux.btf" .tmp_vmlinux.btf
+          elif [ -f "out/.tmp_vmlinux.btf" ]; then
+            cp "out/.tmp_vmlinux.btf" .tmp_vmlinux.btf
+          fi
+
+      - name: 检测 DWARF 版本信息（如果存在 .tmp_vmlinux.btf）
+        if: env.BUILD_SUCCESS == 'false' && hashFiles('kernel_workspace/.tmp_vmlinux.btf') != ''
+        run: |
+          cd kernel_workspace
+          echo "=========================================="
+          echo "检测 DWARF 版本信息"
+          echo "=========================================="
+          
+          readelf -S .tmp_vmlinux.btf 2>/dev/null > dwarf_sections.txt || true
+          readelf -wi .tmp_vmlinux.btf 2>/dev/null > dwarf_full.txt || true
+          
+          DWARF_VER=$(readelf -wi .tmp_vmlinux.btf 2>/dev/null | grep -m1 "Version:" | awk '{print $2}' || echo "unknown")
+          echo "DWARF_VERSION=${DWARF_VER}" >> $GITHUB_ENV
+          
+          echo "=== DWARF Version ===" > dwarf_info.txt
+          echo "DWARF Version: ${DWARF_VER}" >> dwarf_info.txt
+
+      - name: 使用 GDB 跟踪 pahole（仅在构建失败且有 .btf 时）
+        if: env.BUILD_SUCCESS == 'false' && hashFiles('kernel_workspace/.tmp_vmlinux.btf') != ''
+        run: |
+          cd kernel_workspace
+          echo "开始 GDB 跟踪 pahole -J .tmp_vmlinux.btf"
+          timeout 300 gdb -batch -ex "run -J .tmp_vmlinux.btf" --args /usr/local/bin/pahole -J .tmp_vmlinux.btf 2>&1 | tee pahole_gdb.log || true
+
+      - name: 收集调试工件（如果构建失败）
+        if: env.BUILD_SUCCESS == 'false'
+        run: |
+          cd kernel_workspace
+          mkdir -p debug_artifacts
+          [ -f ".tmp_vmlinux.btf" ] && cp .tmp_vmlinux.btf debug_artifacts/
+          [ -f "dwarf_info.txt" ] && cp dwarf_info.txt debug_artifacts/
+          [ -f "pahole_gdb.log" ] && cp pahole_gdb.log debug_artifacts/
+          [ -f "build_output.log" ] && cp build_output.log debug_artifacts/
+          echo "调试工件已收集"
+
+      - name: 上传调试工件（如果构建失败）
+        uses: actions/upload-artifact@v4
+        if: env.BUILD_SUCCESS == 'false'
+        with:
+          name: Debug_Artifacts
+          path: kernel_workspace/debug_artifacts/
+
+      - name: 上传额外构建文件（成功时）
+        if: env.BUILD_SUCCESS == 'true'
+        run: |
+          cd kernel_workspace
+          mkdir -p build_artifacts
+          IMAGE_PATH=$(find . -name "Image" | head -1)
+          if [ -n "$IMAGE_PATH" ]; then
+            cp "$IMAGE_PATH" build_artifacts/Image
+          fi
+          [ -f "common/.config" ] && cp "common/.config" build_artifacts/config
+          [ -f "common/Module.symvers" ] && cp "common/Module.symvers" build_artifacts/
+          [ -f "build_output.log" ] && cp build_output.log build_artifacts/
+
+      - name: 上传构建工件（成功时）
+        uses: actions/upload-artifact@v4
+        if: env.BUILD_SUCCESS == 'true'
+        with:
+          name: Kernel_Build_Artifacts
+          path: kernel_workspace/build_artifacts/
+
+      - name: 打包 AnyKernel3（成功时）
+        if: env.BUILD_SUCCESS == 'true'
+        run: |
+          cd kernel_workspace
+          git clone https://github.com/Winkmoon/AnyKernel3 --depth=1
+          rm -rf ./AnyKernel3/.git
+          IMAGE_FILE=$(find . -name Image | head -n1)
+          if [[ ! -f "$IMAGE_FILE" ]]; then
+            echo "错误：未找到 Image 文件"
+            exit 1
+          fi
+          cp "$IMAGE_FILE" AnyKernel3/
+          cd AnyKernel3
+          echo "${{ env.KERNEL_VERSION }}" > kernel_version.txt
+          ZIPNAME="AnyKernel3_${{ env.KERNEL_VERSION }}.zip"
+          zip -r "../$ZIPNAME" ./*
+
+      - name: 上传 ZIP 工件（成功时）
+        uses: actions/upload-artifact@v4
+        if: env.BUILD_SUCCESS == 'true'
+        with:
+          name: Kernel_ZIP_Artifacts
+          path: kernel_workspace/*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: always() && !cancelled() && needs.build.result == 'success' && env.BUILD_SUCCESS == 'true'
+    steps:
+      - name: 下载 ZIP 工件
+        uses: actions/download-artifact@v4
+        with:
+          name: Kernel_ZIP_Artifacts
+          path: ./release_zips
+
+      - name: 创建 Release
+        id: vars
+        run: |
+          ZIP_FILE=$(ls ./release_zips/*.zip 2>/dev/null | head -n1)
+          if [ -z "$ZIP_FILE" ]; then
+            echo "未找到 ZIP 文件，跳过发布"
+            exit 0
+          fi
+          KERNEL_VER=$(unzip -p "$ZIP_FILE" kernel_version.txt 2>/dev/null || echo "${{ env.KERNEL_VERSION }}")
+          suffix="${{ github.event.inputs.kernel_suffix }}"
+          [ -z "$suffix" ] && suffix="${{ env.KERNEL_NAME }}"
+          FULL_VERSION="${KERNEL_VER}-${suffix}"
+          TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
+          TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
+          TAG_NAME="${{ env.KERNEL_VERSION }}-${{ env.KERNEL_NAME }}-${TIME}"
+          echo "FULL_VERSION=${FULL_VERSION}" >> $GITHUB_ENV
+          echo "TIME_FORM=${TIME_FORM}" >> $GITHUB_ENV
+          echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: "内核 ${{ env.FULL_VERSION }}"
+          body: |
+            自动构建于 ${{ env.TIME_FORM }}
+            内核版本：${{ env.FULL_VERSION }}
+            设备：${{ env.CPU }} / ${{ env.FEIL }}
+            Android 版本：${{ env.ANDROID_VERSION }}
+            源码分支：16.2-rebase
+          files: ./release_zips/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}1
