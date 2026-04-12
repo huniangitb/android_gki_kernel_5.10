@@ -40,7 +40,7 @@ jobs:
           sudo apt install -y libdw-dev libz-dev libiberty-dev
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
 
-      - name: 缓存 pahole 源码
+      - name: 缓存 pahole
         id: cache-pahole
         uses: actions/cache@v4
         with:
@@ -65,13 +65,6 @@ jobs:
           sudo make install
           sudo ldconfig
 
-      - name: 安装 repo 工具
-        run: |
-          curl -s https://mirrors.tuna.tsinghua.edu.cn/git/git-repo > ~/repo
-          chmod a+x ~/repo
-          sudo mv ~/repo /usr/local/bin/repo
-          git config --global repo.url https://mirrors.tuna.tsinghua.edu.cn/git/git-repo
-
       - name: 缓存内核源码
         id: cache-kernel
         uses: actions/cache@v4
@@ -90,18 +83,15 @@ jobs:
         run: |
           rm -rf kernel_workspace && mkdir kernel_workspace && cd kernel_workspace
           
-          # 下载工具包
           wget -q --timeout=30 --tries=30 \
             https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/common-android12-5.10.tar.zst \
             -O common-android12-5.10.tar.zst
           tar -I zstd -xf common-android12-5.10.tar.zst
           
-          # 克隆内核源码
           if [ ! -d "common" ]; then
             git clone --depth=1 --branch 16.2-rebase https://github.com/ESK-Project/android_kernel_xiaomi_mt6895 common
           fi
           
-          # 清理（忽略错误）
           rm common/android/abi_gki_protected_exports_* 2>/dev/null || true
 
       - name: 下载并安装 Clang
@@ -141,16 +131,6 @@ jobs:
             return 0;\
           }' main.c || true
 
-      - name: 配置构建环境
-        run: |
-          cd kernel_workspace
-          CLANG_PATH="prebuilts-master/clang/host/linux-x86/clang-r584948b/bin"
-          if [ -f "common/build.config.common" ]; then
-            sed -i "s|CLANG_PREBUILT_BIN=.*|CLANG_PREBUILT_BIN=$CLANG_PATH|" common/build.config.common 2>/dev/null || true
-            echo "CC=clang" >> common/build.config.common
-            echo "PAHOLE=/usr/local/bin/pahole" >> common/build.config.common
-          fi
-
       - name: 构建内核
         id: build_kernel
         run: |
@@ -158,16 +138,22 @@ jobs:
           export PATH="/usr/local/bin:$PATH"
           export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
           
-          # 尝试构建
-          if [ -f "build/build.sh" ]; then
-            LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | tee build_output.log
-          else
-            cd common
-            make ARCH=arm64 CC=clang LD=ld.lld -j$(nproc) 2>&1 | tee ../build_output.log
-            cd ..
-          fi
+          # 设置 Mali 平台变量
+          export MTK_PLATFORM_VERSION="mt6895"
+          export CONFIG_MALI_PLATFORM_NAME="mt6895"
+          export MALI_PLATFORM_DIR="mt6895"
           
-          # 检查 Image 是否存在
+          cd common
+          
+          # 构建内核
+          make ARCH=arm64 CC=clang LD=ld.lld LLVM=1 \
+            MTK_PLATFORM_VERSION=mt6895 \
+            CONFIG_MALI_PLATFORM_NAME=mt6895 \
+            MALI_PLATFORM_DIR=mt6895 \
+            -j$(nproc) 2>&1 | tee ../build_output.log
+          
+          cd ..
+          
           IMAGE_FILE=$(find . -name "Image" | head -1)
           if [ -n "$IMAGE_FILE" ]; then
             echo "build_success=true" >> $GITHUB_OUTPUT
@@ -177,6 +163,7 @@ jobs:
           else
             echo "build_success=false" >> $GITHUB_OUTPUT
             echo "内核构建失败"
+            tail -50 build_output.log
           fi
 
       - name: 设置输出
@@ -194,7 +181,10 @@ jobs:
           cp "$IMAGE_FILE" AnyKernel3/
           cd AnyKernel3
           echo "${{ env.KERNEL_VERSION }}" > kernel_version.txt
-          zip -r "../AnyKernel3_${{ env.KERNEL_VERSION }}.zip" ./*
+          suffix="${{ github.event.inputs.kernel_suffix }}"
+          [ -z "$suffix" ] && suffix="${{ env.KERNEL_NAME }}"
+          ZIPNAME="AnyKernel3_${{ env.KERNEL_VERSION }}-${suffix}.zip"
+          zip -r "../$ZIPNAME" ./*
 
       - name: 上传 ZIP
         uses: actions/upload-artifact@v4
@@ -203,9 +193,9 @@ jobs:
           name: Kernel_ZIP
           path: kernel_workspace/*.zip
 
-      - name: 上传构建日志（失败时）
+      - name: 上传构建日志
         uses: actions/upload-artifact@v4
-        if: steps.build_kernel.outputs.build_success != 'true'
+        if: always()
         with:
           name: Build_Logs
           path: kernel_workspace/build_output.log
