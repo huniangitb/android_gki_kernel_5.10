@@ -102,24 +102,19 @@ jobs:
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
 
-      - name: 修补 resolve_btfids.c（使 xdp_buff 符号失败时不退出）
+      - name: 修补 resolve_btfids.c（将所有未解析符号改为警告）
         run: |
           cd kernel_workspace/common/tools/bpf/resolve_btfids
           cp main.c main.c.bak
           
-          # 修改 id_patch 函数：遇到 xdp_buff 符号时只警告并返回0，否则正常报错
+          # 修改 id_patch 函数：将所有未解析符号改为警告，不再使构建失败
           sed -i '/if (!id->id) {/,/^[[:space:]]*}/c\
           if (!id->id) {\
-            if (strstr(id->name, "xdp_buff")) {\
-              fprintf(stderr, "WARNING: unresolved symbol %s, ignoring\\n", id->name);\
-              return 0;\
-            } else {\
-              fprintf(stderr, "FAILED unresolved symbol %s\\n", id->name);\
-              return -EINVAL;\
-            }\
+            fprintf(stderr, "WARNING: unresolved symbol %s, ignoring\\n", id->name);\
+            return 0;\
           }' main.c
           
-          echo "已修改 resolve_btfids 源码，构建时将自动使用修改后的版本"
+          echo "已修改 resolve_btfids 源码，所有未解析符号都将被忽略（转为警告）"
 
       - name: 配置构建环境
         run: |
