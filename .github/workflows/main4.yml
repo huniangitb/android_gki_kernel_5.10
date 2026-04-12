@@ -1,4 +1,4 @@
-name: kerne-cust2
+name: kerne-cust2-g
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
@@ -179,9 +179,7 @@ jobs:
           # 6. 设置 pahole 路径
           echo "PAHOLE=/usr/local/bin/pahole" >> "$CONFIG_FILE"
           
-          # 7. 添加主机编译标志
-          echo "HOSTCFLAGS += -I/usr/include" >> "$CONFIG_FILE"
-          echo "HOSTLDFLAGS += -L/usr/lib/x86_64-linux-gnu -lelf" >> "$CONFIG_FILE"
+          # 注意：不再设置 HOSTCFLAGS/HOSTLDFLAGS，因为已经单独修复了 resolve_btfids/Makefile
 
       - name: 构建内核（先让编译失败，保留 .tmp_vmlinux.btf）
         run: |
@@ -415,7 +413,7 @@ jobs:
           # 确保 printf 可用
           sudo ln -sf /usr/bin/printf /bin/printf 2>/dev/null || true
           
-          #LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
             { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
           
@@ -497,4 +495,4 @@ jobs:
             Android 版本：${{ env.ANDROID_VERSION }}
           files: ./release_zips/*.zip
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}1
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
