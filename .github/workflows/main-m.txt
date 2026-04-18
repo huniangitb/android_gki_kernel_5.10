@@ -1,0 +1,155 @@
+# .github/workflows/kerne-cust2.yml
+name: kerne-cust-m
+env:
+  TZ: Asia/Shanghai
+  CPU: 'mt6895'
+  FEIL: 'redmi+xiaomi'
+  ANDROID_VERSION: 'android12'
+  KERNEL_VERSION: '5.10.246'
+  KERNEL_NAME: 'cust'
+  REPO_URL: 'https://mirrors.tuna.tsinghua.edu.cn/git/git-repo'
+  # 定义工具链URL
+  GCC_URL: 'https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/aarch64-linux-android-4.9-refs_tags_android-12.1.0_r27.tar.gz'
+  CLANG_URL: 'https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz'
+  # 定义内核源码URL (与之前保持一致)
+  KERNEL_SOURCE_URL: 'https://github.com/ztc1997/android_gki_kernel_5.10_common'
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_suffix:
+        description: '内核后缀(留空默认,开头别加连字符)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 最大化建筑空间
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+          swap-size-mb: 8192
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: 安装基础依赖
+        run: |
+          sudo apt update
+          sudo apt install -y bc bison build-essential curl ca-certificates \
+          flex git kmod libelf-dev libssl-dev lz4 make ncurses-dev \
+          openssl python3 python3-pip wget xz-utils zstd cpio \
+          # 安装pahole
+          sudo apt install -y dwarves
+
+      - name: 创建目录并下载工具链和源码
+        run: |
+          # 创建工作目录
+          mkdir -p $GITHUB_WORKSPACE/kernel_workspace
+          cd $GITHUB_WORKSPACE/kernel_workspace
+          
+          # 下载GCC工具链
+          wget -c ${{ env.GCC_URL }} -O gcc-aarch64.tar.gz
+          mkdir -p gcc && tar -xf gcc-aarch64.tar.gz -C gcc --strip-components=1
+          
+          # 下载Clang工具链
+          wget -c ${{ env.CLANG_URL }} -O clang.tar.gz
+          mkdir -p clang && tar -xf clang.tar.gz -C clang --strip-components=1
+          
+          # 克隆内核源码
+          git clone --depth=1 ${{ env.KERNEL_SOURCE_URL }} -b android12-5.10-2025-09 kernel
+
+      - name: 修改内核配置
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace/kernel
+          sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
+        
+          # 使用默认配置
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
+          export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          make ARCH=arm64 gki_defconfig
+          # 添加自定义配置
+          scripts/config --enable TMPFS_POSIX_ACL
+          scripts/config --enable TMPFS_XATTR
+          # 开启BTF所需的调试信息
+          scripts/config --enable DEBUG_INFO_BTF
+      - name: 编译内核
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace
+          # 设置工具链路径
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
+          export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          # 开始编译，使用所有CPU核心
+          make -C kernel O=out ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            CLANG_TRIPLE=$CLANG_TRIPLE \
+            -j$(nproc --all)
+
+      - name: 打包AnyKernel3
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace
+          git clone https://github.com/Winkmoon/AnyKernel3 --depth=1
+          rm -rf ./AnyKernel3/.git
+          # 复制内核镜像
+          cp kernel/out/arch/arm64/boot/Image AnyKernel3/
+          # 添加内核版本信息
+          echo "${{ env.KERNEL_VERSION }}" > AnyKernel3/kernel_version.txt
+          cd AnyKernel3
+          ZIPNAME="AnyKernel3_${{ env.KERNEL_VERSION }}.zip"
+          zip -r "../$ZIPNAME" ./*
+
+      - name: 上传ZIP工件
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel_ZIP_Artifacts
+          path: ${{ github.workspace }}/kernel_workspace/*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载ZIP工件
+        uses: actions/download-artifact@v4
+        with:
+          name: Kernel_ZIP_Artifacts
+          path: ./release_zips
+
+      - name: 创建Release
+        id: vars
+        run: |
+          ZIP_FILE=$(ls ./release_zips/*.zip | head -n1)
+          KERNEL_VER=$(unzip -p "$ZIP_FILE" kernel_version.txt 2>/dev/null || echo "${{ env.KERNEL_VERSION }}")
+          suffix="${{ github.event.inputs.kernel_suffix }}"
+          [ -z "$suffix" ] && suffix="${{ env.KERNEL_NAME }}"
+          FULL_VERSION="${KERNEL_VER}-${suffix}"
+          TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
+          TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
+          TAG_NAME="${{ env.KERNEL_VERSION }}-${{ env.KERNEL_NAME }}-${TIME}"
+          echo "FULL_VERSION=${FULL_VERSION}" >> $GITHUB_ENV
+          echo "TIME_FORM=${TIME_FORM}" >> $GITHUB_ENV
+          echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
+
+      - name: 发布Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: "内核 ${{ env.FULL_VERSION }}"
+          body: |
+            自动构建于 ${{ env.TIME_FORM }}
+            内核版本：${{ env.FULL_VERSION }}
+            设备：${{ env.CPU }} / ${{ env.FEIL }}
+            Android 版本：${{ env.ANDROID_VERSION }}
+          files: ./release_zips/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
