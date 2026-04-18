@@ -54,11 +54,11 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel_workspace
           
           # 下载GCC工具链
-          wget -c ${{ env.GCC_URL }} -O gcc-aarch64.tar.gz
+          wget -q -c ${{ env.GCC_URL }} -O gcc-aarch64.tar.gz
           mkdir -p gcc && tar -xf gcc-aarch64.tar.gz -C gcc
           
           # 下载Clang工具链
-          wget -c ${{ env.CLANG_URL }} -O clang.tar.gz
+          wget -q -c ${{ env.CLANG_URL }} -O clang.tar.gz
           mkdir -p clang && tar -xf clang.tar.gz -C clang
           
           # 克隆内核源码
@@ -76,10 +76,16 @@ jobs:
           export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
           export CLANG_TRIPLE=aarch64-linux-gnu-
           
+          clang -v
+          ls $GITHUB_WORKSPACE/kernel_workspace/gcc/bin
           # 使用 clang 进行配置
+          make ARCH=arm64 mrproper CC=clang LD=ld.lld \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            CLANG_TRIPLE=$CLANG_TRIPLE
           make ARCH=arm64 CC=clang LD=ld.lld \
             CROSS_COMPILE=$CROSS_COMPILE \
             CLANG_TRIPLE=$CLANG_TRIPLE \
+            O=out \
             gki_defconfig
           
           # 添加自定义配置
@@ -92,6 +98,7 @@ jobs:
           make ARCH=arm64 CC=clang LD=ld.lld \
             CROSS_COMPILE=$CROSS_COMPILE \
             CLANG_TRIPLE=$CLANG_TRIPLE \
+            O=out \
             olddefconfig
 
       - name: 添加内核后缀
