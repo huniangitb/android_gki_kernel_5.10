@@ -78,28 +78,23 @@ jobs:
           
           clang -v
           ls $GITHUB_WORKSPACE/kernel_workspace/gcc/bin
-          # 使用 clang 进行配置
+          
+          # 清理配置
           make ARCH=arm64 mrproper CC=clang LD=ld.lld \
             CROSS_COMPILE=$CROSS_COMPILE \
             CLANG_TRIPLE=$CLANG_TRIPLE
+          
+          # 向 gki_defconfig 追加配置（在生成配置前）
+          echo 'CONFIG_TMPFS_POSIX_ACL=y' >> arch/arm64/configs/gki_defconfig
+          echo 'CONFIG_TMPFS_XATTR=y' >> arch/arm64/configs/gki_defconfig
+          echo 'CONFIG_DEBUG_INFO_BTF=y' >> arch/arm64/configs/gki_defconfig
+          
+          # 生成配置
           make ARCH=arm64 CC=clang LD=ld.lld \
             CROSS_COMPILE=$CROSS_COMPILE \
             CLANG_TRIPLE=$CLANG_TRIPLE \
             O=out \
             gki_defconfig
-          
-          # 添加自定义配置
-          scripts/config --enable TMPFS_POSIX_ACL
-          scripts/config --enable TMPFS_XATTR
-          # 开启BTF所需的调试信息
-          scripts/config --enable DEBUG_INFO_BTF
-          
-          # 重新生成配置
-          make ARCH=arm64 CC=clang LD=ld.lld \
-            CROSS_COMPILE=$CROSS_COMPILE \
-            CLANG_TRIPLE=$CLANG_TRIPLE \
-            O=out \
-            olddefconfig
 
       - name: 添加内核后缀
         run: |
@@ -109,18 +104,6 @@ jobs:
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
           export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          
-          suffix="${{ github.event.inputs.kernel_suffix }}"
-          [ -z "$suffix" ] && suffix="${{ env.KERNEL_NAME }}"
-          
-          # 添加内核后缀
-          echo "CONFIG_LOCALVERSION=\"-$suffix\"" >> .config
-          
-          # 重新生成配置
-          make ARCH=arm64 CC=clang LD=ld.lld \
-            CROSS_COMPILE=$CROSS_COMPILE \
-            CLANG_TRIPLE=$CLANG_TRIPLE \
-            olddefconfig
 
       - name: 编译内核
         run: |
@@ -196,4 +179,4 @@ jobs:
             Android 版本：${{ env.ANDROID_VERSION }}
           files: ./release_zips/*.zip
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}1
