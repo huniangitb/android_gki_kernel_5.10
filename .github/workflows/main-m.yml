@@ -67,7 +67,7 @@ jobs:
       - name: 修改内核配置
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/kernel
-          sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
+          sed -i '/regalloc-enable-advisor=release/s/^/# /' Makefile
         
           # 使用默认配置
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
