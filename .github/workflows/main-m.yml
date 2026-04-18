@@ -44,6 +44,7 @@ jobs:
           sudo apt install -y bc bison build-essential curl ca-certificates \
           flex git kmod libelf-dev libssl-dev lz4 make ncurses-dev \
           openssl python3 python3-pip wget xz-utils zstd cpio \
+          gcc-aarch64-linux-gnu
           # 安装pahole
           sudo apt install -y dwarves
 
@@ -67,18 +68,54 @@ jobs:
       - name: 修改内核配置
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/kernel
+          
+          # 修复 Makefile 中的 regalloc 问题
           sed -i '/regalloc-enable-advisor=release/s/^/# /' Makefile
-        
-          # 使用默认配置
+          
+          # 设置工具链路径
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
           export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          make ARCH=arm64 gki_defconfig
+          
+          # 使用 clang 进行配置
+          make ARCH=arm64 CC=clang LD=ld.lld \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            CLANG_TRIPLE=$CLANG_TRIPLE \
+            gki_defconfig
+          
           # 添加自定义配置
           scripts/config --enable TMPFS_POSIX_ACL
           scripts/config --enable TMPFS_XATTR
           # 开启BTF所需的调试信息
           scripts/config --enable DEBUG_INFO_BTF
+          
+          # 重新生成配置
+          make ARCH=arm64 CC=clang LD=ld.lld \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            CLANG_TRIPLE=$CLANG_TRIPLE \
+            olddefconfig
+
+      - name: 添加内核后缀
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace/kernel
+          
+          # 设置工具链路径
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
+          export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          
+          suffix="${{ github.event.inputs.kernel_suffix }}"
+          [ -z "$suffix" ] && suffix="${{ env.KERNEL_NAME }}"
+          
+          # 添加内核后缀
+          echo "CONFIG_LOCALVERSION=\"-$suffix\"" >> .config
+          
+          # 重新生成配置
+          make ARCH=arm64 CC=clang LD=ld.lld \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            CLANG_TRIPLE=$CLANG_TRIPLE \
+            olddefconfig
+
       - name: 编译内核
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
@@ -86,6 +123,7 @@ jobs:
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
           export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
           export CLANG_TRIPLE=aarch64-linux-gnu-
+          
           # 开始编译，使用所有CPU核心
           make -C kernel O=out ARCH=arm64 \
             CC=clang \
