@@ -65,12 +65,12 @@ jobs:
           wget -q -c --timeout=30 --tries=30 ${{ env.GKI_TOOL_PACKAGE }} -O gki_tools.tar.zst
           mkdir -p gki_tools && tar -xf gki_tools.tar.zst -C gki_tools
 
-      - name: 准备 KMI 符号列表（官方 copy_symbols.sh 逻辑）
+      - name: 准备 KMI 符号列表（模拟 copy_symbols.sh + 过滤节头和注释）
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/kernel
           mkdir -p out
           
-          # 定义附加符号列表（与 build.config.gki.aarch64 一致）
+          # 定义附加列表（与 build.config.gki.aarch64 一致）
           ADDITIONAL_LISTS="
             android/abi_gki_aarch64_type_visibility
             android/abi_gki_aarch64_arg
@@ -101,10 +101,8 @@ jobs:
             android/abi_gki_aarch64_tuxera
           "
           
-          # 复制主列表
+          # 拼接主列表和附加列表
           cp ${{ env.KMI_SYMBOL_LIST }} out/abi_symbollist
-          
-          # 追加附加列表
           for list in $ADDITIONAL_LISTS; do
             if [ -f "$list" ]; then
               echo >> out/abi_symbollist
@@ -114,8 +112,8 @@ jobs:
             fi
           done
           
-          # 去除注释和空行，生成内核白名单文件
-          grep -v '^\s*#' out/abi_symbollist | grep -v '^\s*$' > out/abi_symbollist.raw
+          # 过滤：去除节头（以[开头）、注释（以#开头）、空行，生成纯符号列表
+          grep -v '^\s*#' out/abi_symbollist | grep -v '^\s*$' | grep -v '^\s*\[' > out/abi_symbollist.raw
           
           RAW_COUNT=$(wc -l < out/abi_symbollist.raw)
           echo "白名单符号数量: ${RAW_COUNT}"
@@ -130,7 +128,7 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/kernel
           
-          # 修复 Makefile
+          # 修复 Makefile 中的 regalloc 问题
           sed -i '/regalloc-enable-advisor=release/s/^/# /' Makefile
           
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
@@ -160,11 +158,11 @@ jobs:
             CLANG_TRIPLE=$CLANG_TRIPLE \
             O=out LLVM=1 LLVM_IAS=1 gki_defconfig
           
-          # 启用 KMI 修剪
+          # 启用 KMI 修剪（使用绝对路径）
           scripts/config --file out/.config \
             -d UNUSED_SYMBOLS \
             -e TRIM_UNUSED_KSYMS \
-            --set-str UNUSED_KSYMS_WHITELIST out/abi_symbollist.raw
+            --set-str UNUSED_KSYMS_WHITELIST "$PWD/out/abi_symbollist.raw"
           
           make ARCH=arm64 CC=clang LD=ld.lld \
             CROSS_COMPILE=$CROSS_COMPILE \
