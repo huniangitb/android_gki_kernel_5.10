@@ -1,4 +1,3 @@
-# .github/workflows/kerne-cust2.yml
 name: kerne-cust-m
 env:
   TZ: Asia/Shanghai
@@ -96,6 +95,7 @@ jobs:
             CLANG_TRIPLE=$CLANG_TRIPLE \
             O=out \
             LLVM=1 \
+            LLVM_IAS=1 \
             gki_defconfig
 
       - name: 检查配置选项是否生效
@@ -188,6 +188,7 @@ jobs:
             CROSS_COMPILE=$CROSS_COMPILE \
             CLANG_TRIPLE=$CLANG_TRIPLE \
             LLVM=1 \
+            LLVM_IAS=1 \
             -j$(nproc --all)
 
       - name: 打包AnyKernel3
