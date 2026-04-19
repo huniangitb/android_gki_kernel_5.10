@@ -13,10 +13,14 @@ env:
   KERNEL_SOURCE_URL: 'https://github.com/ztc1997/android_gki_kernel_5.10_common'
   GKI_TOOL_PACKAGE: 'https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/common-android12-5.10.tar.zst'
   
-  KMI_SYMBOL_LIST: 'android/abi_gki_aarch64'
-  TRIM_NONLISTED_KMI: 1
-  KMI_SYMBOL_LIST_STRICT_MODE: 1
-  KMI_ENFORCED: 1
+  # 能开机内核的符号列表文件（直接使用，不再手动合并）
+  BOOTABLE_MODULE_SYMVERS_URL: 'https://github.com/huniangitb/Clang-r584948b/releases/download/vConfg/Module.symvers'
+  BOOTABLE_WHITELIST_URL: 'https://github.com/huniangitb/Clang-r584948b/releases/download/vConfg/abi_symbollist.raw'
+  
+  # KMI 配置
+  TRIM_NONLISTED_KMI: 1          # 修剪不在白名单中的符号
+  KMI_SYMBOL_LIST_STRICT_MODE: 1 # 严格校验（1:1 匹配）
+  KMI_ENFORCED: 1                # 校验失败则中断构建
 
 on:
   workflow_dispatch:
@@ -65,77 +69,36 @@ jobs:
           wget -q -c --timeout=30 --tries=30 ${{ env.GKI_TOOL_PACKAGE }} -O gki_tools.tar.zst
           mkdir -p gki_tools && tar -xf gki_tools.tar.zst -C gki_tools
 
-      - name: 准备 KMI 符号列表（模拟 copy_symbols.sh + 过滤节头和注释）
+      - name: 下载能开机内核的符号列表（作为白名单基准）
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/kernel
           mkdir -p out
           
-          # 定义附加列表（与 build.config.gki.aarch64 一致）
-          ADDITIONAL_LISTS="
-            android/abi_gki_aarch64_type_visibility
-            android/abi_gki_aarch64_arg
-            android/abi_gki_aarch64_core
-            android/abi_gki_aarch64_db845c
-            android/abi_gki_aarch64_exynos
-            android/abi_gki_aarch64_exynosauto
-            android/abi_gki_aarch64_fips140
-            android/abi_gki_aarch64_galaxy
-            android/abi_gki_aarch64_generic
-            android/abi_gki_aarch64_hikey960
-            android/abi_gki_aarch64_honor
-            android/abi_gki_aarch64_imx
-            android/abi_gki_aarch64_lenovo
-            android/abi_gki_aarch64_moto
-            android/abi_gki_aarch64_mtk
-            android/abi_gki_aarch64_nothing
-            android/abi_gki_aarch64_oplus
-            android/abi_gki_aarch64_qcom
-            android/abi_gki_aarch64_rockchip
-            android/abi_gki_aarch64_unisoc
-            android/abi_gki_aarch64_virtual_device
-            android/abi_gki_aarch64_vivo
-            android/abi_gki_aarch64_xiaomi
-            android/abi_gki_aarch64_zebra
-            android/abi_gki_aarch64_asus
-            android/abi_gki_aarch64_transsion
-            android/abi_gki_aarch64_tuxera
-          "
-          
-          # 拼接主列表和附加列表
-          cp ${{ env.KMI_SYMBOL_LIST }} out/abi_symbollist
-          for list in $ADDITIONAL_LISTS; do
-            if [ -f "$list" ]; then
-              echo >> out/abi_symbollist
-              cat "$list" >> out/abi_symbollist
-            else
-              echo "警告: $list 不存在，跳过"
-            fi
-          done
-          
-          # 过滤：去除节头（以[开头）、注释（以#开头）、空行，生成纯符号列表
-          grep -v '^\s*#' out/abi_symbollist | grep -v '^\s*$' | grep -v '^\s*\[' > out/abi_symbollist.raw
-          
-          RAW_COUNT=$(wc -l < out/abi_symbollist.raw)
-          echo "白名单符号数量: ${RAW_COUNT}"
-          if [ ${RAW_COUNT} -eq 0 ]; then
-            echo "错误: 白名单为空" >&2
+          # 下载能开机内核的 Module.symvers（用于对比差异）
+          wget -q --timeout=30 --tries=3 ${{ env.BOOTABLE_MODULE_SYMVERS_URL }} -O out/bootable_Module.symvers || {
+            echo "错误：无法下载能开机内核的 Module.symvers" >&2
             exit 1
-          fi
-          echo "白名单前10行:"
-          head -10 out/abi_symbollist.raw
+          }
+          
+          # 下载能开机内核的扁平白名单（直接用作内核白名单）
+          wget -q --timeout=30 --tries=3 ${{ env.BOOTABLE_WHITELIST_URL }} -O out/abi_symbollist.raw || {
+            echo "错误：无法下载能开机内核的 abi_symbollist.raw" >&2
+            exit 1
+          }
+          
+          echo "已下载能开机内核的白名单，共 $(wc -l < out/abi_symbollist.raw) 行"
 
       - name: 修改内核配置并启用 KMI 修剪
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/kernel
           
-          # 修复 Makefile 中的 regalloc 问题
           sed -i '/regalloc-enable-advisor=release/s/^/# /' Makefile
           
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
           export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
           export CLANG_TRIPLE=aarch64-linux-gnu-
           
-          # 清理并生成基础配置
+          # 生成基础配置
           make ARCH=arm64 mrproper CC=clang LD=ld.lld \
             CROSS_COMPILE=$CROSS_COMPILE \
             CLANG_TRIPLE=$CLANG_TRIPLE \
@@ -152,13 +115,12 @@ jobs:
           echo 'CONFIG_DEBUG_INFO_BTF=y' >> arch/arm64/configs/gki_defconfig
           sed -i 's/CONFIG_LTO_CLANG_FULL=y/CONFIG_LTO_CLANG_THIN=y/g' arch/arm64/configs/gki_defconfig
           
-          # 重新生成配置
           make ARCH=arm64 CC=clang LD=ld.lld \
             CROSS_COMPILE=$CROSS_COMPILE \
             CLANG_TRIPLE=$CLANG_TRIPLE \
             O=out LLVM=1 LLVM_IAS=1 gki_defconfig
           
-          # 启用 KMI 修剪（使用绝对路径）
+          # 使用下载的白名单启用 KMI 修剪（绝对路径）
           scripts/config --file out/.config \
             -d UNUSED_SYMBOLS \
             -e TRIM_UNUSED_KSYMS \
@@ -169,8 +131,6 @@ jobs:
             CLANG_TRIPLE=$CLANG_TRIPLE \
             O=out LLVM=1 LLVM_IAS=1 olddefconfig
           
-          # 验证配置
-          echo "验证 KMI 修剪配置:"
           grep "CONFIG_TRIM_UNUSED_KSYMS" out/.config
           grep "CONFIG_UNUSED_KSYMS_WHITELIST" out/.config
 
@@ -190,7 +150,46 @@ jobs:
           
           ls -l kernel/out/arch/arm64/boot/Image
 
-      - name: 严格模式校验（使用官方 compare_to_symbol_list）
+      - name: 对比当前内核导出符号与能开机内核的差异
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace/kernel
+          
+          # 提取当前内核实际导出的符号
+          awk '{print $2}' out/Module.symvers | sort -u > out/current_exported.txt
+          
+          # 提取能开机内核实际导出的符号（基准）
+          awk '{print $2}' out/bootable_Module.symvers | sort -u > out/bootable_exported.txt
+          
+          echo "=========================================="
+          echo "KMI 符号差异报告"
+          echo "=========================================="
+          
+          # 能开机有，当前没有 → 缺失符号（可能导致无法开机）
+          comm -23 out/bootable_exported.txt out/current_exported.txt > out/missing_symbols.txt
+          MISSING=$(wc -l < out/missing_symbols.txt)
+          echo "缺失的符号（能开机有，当前无）: $MISSING"
+          if [ $MISSING -gt 0 ]; then
+            echo "前20个缺失符号："
+            head -20 out/missing_symbols.txt
+          fi
+          
+          # 当前有，能开机没有 → 多余符号（KMI 膨胀）
+          comm -13 out/bootable_exported.txt out/current_exported.txt > out/extra_symbols.txt
+          EXTRA=$(wc -l < out/extra_symbols.txt)
+          echo "多余的符号（当前有，能开机无）: $EXTRA"
+          if [ $EXTRA -gt 0 ]; then
+            echo "前20个多余符号："
+            head -20 out/extra_symbols.txt
+          fi
+          
+          # 生成完整差异文件供上传
+          echo "=== 缺失符号 ===" > out/kmi_diff.txt
+          cat out/missing_symbols.txt >> out/kmi_diff.txt
+          echo "" >> out/kmi_diff.txt
+          echo "=== 多余符号 ===" >> out/kmi_diff.txt
+          cat out/extra_symbols.txt >> out/kmi_diff.txt
+
+      - name: 严格模式校验（使用能开机内核的白名单）
         if: env.KMI_SYMBOL_LIST_STRICT_MODE == '1'
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/kernel
@@ -198,11 +197,21 @@ jobs:
           chmod +x $GITHUB_WORKSPACE/kernel_workspace/gki_tools/build/abi/compare_to_symbol_list
           
           echo "=========================================="
-          echo "严格模式 KMI 符号校验"
+          echo "严格模式 KMI 符号校验（与能开机内核白名单对比）"
           echo "=========================================="
-          $GITHUB_WORKSPACE/kernel_workspace/gki_tools/build/abi/compare_to_symbol_list \
-            out/Module.symvers out/abi_symbollist.raw
-          echo "校验通过"
+          
+          # 使用下载的白名单进行严格校验
+          if $GITHUB_WORKSPACE/kernel_workspace/gki_tools/build/abi/compare_to_symbol_list \
+            out/Module.symvers out/abi_symbollist.raw; then
+            echo "✓ 严格模式校验通过"
+          else
+            echo "✗ 严格模式校验失败"
+            if [ "${{ env.KMI_ENFORCED }}" = "1" ]; then
+              exit 1
+            else
+              echo "警告: KMI_ENFORCED=0，继续构建"
+            fi
+          fi
 
       - name: 打包 AnyKernel3
         run: |
@@ -211,6 +220,7 @@ jobs:
           rm -rf ./AnyKernel3/.git
           cp kernel/out/arch/arm64/boot/Image AnyKernel3/
           echo "${{ env.KERNEL_VERSION }}" > AnyKernel3/kernel_version.txt
+          cp kernel/out/kmi_diff.txt AnyKernel3/ 2>/dev/null || true
           cd AnyKernel3
           zip -r "../AnyKernel3_${{ env.KERNEL_VERSION }}.zip" ./*
 
@@ -257,7 +267,7 @@ jobs:
             内核版本：${{ env.FULL_VERSION }}
             设备：${{ env.CPU }} / ${{ env.FEIL }}
             Android 版本：${{ env.ANDROID_VERSION }}
-            KMI 校验已启用
+            KMI 校验：使用能开机内核白名单，严格模式已启用
           files: ./release_zips/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
