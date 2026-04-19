@@ -109,7 +109,8 @@ jobs:
           if [[ -f "common/scripts/link-vmlinux.sh" ]]; then
             sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' common/scripts/link-vmlinux.sh
           fi
-          
+          sed -i '/^if \[ -n "${LLVM_IAS}" \]; then$/,/^fi$/d' build/build.sh
+          sed -i '/^if \[\[ -n "${LLVM}" \]\]; then$/,/^fi$/d' build/build.sh
           # 验证配置
           echo "=== build.config.common 中的 Clang 配置 ==="
           grep -E "CLANG_PREBUILT_BIN|CC" common/build.config.common || true
@@ -119,7 +120,8 @@ jobs:
       - name: 构建内核
         run: |
           cd kernel_workspace
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
+          ls /home/runner/work/kernel_workspace/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CROSS_COMPILE=/home/runner/work/kernel_workspace/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-gnu-
 
       - name: 整理工件
         run: |
