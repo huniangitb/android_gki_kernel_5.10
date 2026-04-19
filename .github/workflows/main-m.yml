@@ -90,10 +90,11 @@ jobs:
           # 设置工具链路径
           CLANG_BIN="$(pwd)/prebuilts/clang/host/linux-x86/clang-r584948b/bin"
           GCC_BIN="$(pwd)/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin"
-          
+          export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
+          clang -v
           # 注入配置
-          echo "CLANG_PREBUILT_BIN=$CLANG_BIN" >> common/build.config.common
-          echo "CROSS_COMPILE=$GCC_BIN/aarch64-linux-gnu-" >> common/build.config.aarch64
+          sed -i "/^CLANG_PREBUILT_BIN=/c\CLANG_PREBUILT_BIN=$CLANG_BIN" common/build.config.common
+          sed -i "/^CROSS_COMPILE=/c\CROSS_COMPILE=$GCC_BIN/aarch64-linux-gnu-" common/build.config.aarch64
           
           # 移除检查
           sed -i 's/check_defconfig//' ./common/build.config.gki
@@ -106,6 +107,9 @@ jobs:
       - name: 构建内核
         run: |
           cd kernel_workspace
+          CLANG_BIN="$(pwd)/prebuilts/clang/host/linux-x86/clang-r584948b/bin"
+          GCC_BIN="$(pwd)/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin"
+          export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
 
       - name: 整理工件
