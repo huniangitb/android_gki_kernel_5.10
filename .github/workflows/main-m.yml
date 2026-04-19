@@ -39,7 +39,7 @@ jobs:
       - name: 初始化源码仓库
         run: |
           rm -rf kernel_workspace && mkdir kernel_workspace && cd kernel_workspace
-          wget -q -c --show-progress --timeout=30 --tries=30 \
+          wget -q -c --timeout=30 --tries=30 \
             https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/common-android12-5.10.tar.zst \
             -O common-android12-5.10.tar.zst
           tar -I zstd -xf common-android12-5.10.tar.zst
@@ -64,12 +64,12 @@ jobs:
         run: |
           cd kernel_workspace
           # 下载 Clang
-          wget -q -c --show-progress https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz -O clang.tar.gz
+          wget -q -c https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz -O clang.tar.gz
           mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
           tar -xzf clang.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
           
           # 下载 GCC
-          wget -q -c --show-progress https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/aarch64-linux-android-4.9-refs_tags_android-12.1.0_r27.tar.gz -O gcc.tar.gz
+          wget -q -c https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/aarch64-linux-android-4.9-refs_tags_android-12.1.0_r27.tar.gz -O gcc.tar.gz
           mkdir -p prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
           tar -xzf gcc.tar.gz -C prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
 
@@ -120,8 +120,8 @@ jobs:
       - name: 构建内核
         run: |
           cd kernel_workspace
-          ls /home/runner/work/kernel_workspace/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CROSS_COMPILE=/home/runner/work/kernel_workspace/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-gnu-
+          ls prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CROSS_COMPILE=prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-gnu-
 
       - name: 整理工件
         run: |
