@@ -84,26 +84,94 @@ jobs:
             CROSS_COMPILE=$CROSS_COMPILE \
             CLANG_TRIPLE=$CLANG_TRIPLE
           
-          # 向 gki_defconfig 追加配置（在生成配置前）
+          # 添加自定义配置
           echo 'CONFIG_TMPFS_POSIX_ACL=y' >> arch/arm64/configs/gki_defconfig
           echo 'CONFIG_TMPFS_XATTR=y' >> arch/arm64/configs/gki_defconfig
           echo 'CONFIG_DEBUG_INFO_BTF=y' >> arch/arm64/configs/gki_defconfig
+          sed -i 's/CONFIG_LTO_CLANG_FULL=y/CONFIG_LTO_CLANG_THIN=y/g' arch/arm64/configs/gki_defconfig
           
           # 生成配置
           make ARCH=arm64 CC=clang LD=ld.lld \
             CROSS_COMPILE=$CROSS_COMPILE \
             CLANG_TRIPLE=$CLANG_TRIPLE \
             O=out \
+            LLVM=1 \
             gki_defconfig
 
-      - name: 添加内核后缀
+      - name: 检查配置选项是否生效
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/kernel
           
-          # 设置工具链路径
-          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
-          export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
+          echo "=========================================="
+          echo "检查内核配置选项状态"
+          echo "=========================================="
+          
+          # 定义需要检查的配置列表
+          CONFIG_LIST="CONFIG_TMPFS_POSIX_ACL CONFIG_TMPFS_XATTR CONFIG_DEBUG_INFO_BTF CONFIG_LTO_CLANG_THIN"
+          
+          # 检查配置文件是否存在
+          if [ -f out/.config ]; then
+            echo "✓ 找到配置文件: out/.config"
+            echo ""
+            
+            # 逐项检查配置
+            for config in $CONFIG_LIST; do
+              if grep -q "^${config}=y" out/.config; then
+                echo "✓ ${config}=y [已启用]"
+              elif grep -q "^${config}=m" out/.config; then
+                echo "⚠ ${config}=m [编译为模块]"
+              elif grep -q "^${config}=n" out/.config; then
+                echo "✗ ${config}=n [已禁用]"
+              elif grep -q "^# ${config} is not set" out/.config; then
+                echo "✗ ${config} [未设置]"
+              else
+                echo "? ${config} [未找到]"
+              fi
+            done
+            
+            echo ""
+            echo "=========================================="
+            echo "详细配置信息:"
+            echo "=========================================="
+            grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_DEBUG_INFO_BTF|CONFIG_LTO_CLANG" out/.config || true
+            
+            # 检查 BTF 相关依赖
+            echo ""
+            echo "=========================================="
+            echo "BTF 相关依赖检查:"
+            echo "=========================================="
+            grep -E "CONFIG_DEBUG_INFO|CONFIG_DEBUG_INFO_BTF|CONFIG_PAHOLE_HAS_SPLIT_BTF|CONFIG_BPF" out/.config | head -20 || true
+            
+            # 验证关键配置
+            echo ""
+            echo "=========================================="
+            echo "配置验证结果:"
+            echo "=========================================="
+            MISSING_CONFIGS=""
+            for config in CONFIG_TMPFS_POSIX_ACL CONFIG_TMPFS_XATTR; do
+              if ! grep -q "^${config}=y" out/.config; then
+                MISSING_CONFIGS="${MISSING_CONFIGS} ${config}"
+              fi
+            done
+            
+            # BTF 允许模块形式，但最好启用
+            if ! grep -q "CONFIG_DEBUG_INFO_BTF=y" out/.config; then
+              echo "⚠ 警告: CONFIG_DEBUG_INFO_BTF 未启用为 y，BTF 生成可能失败"
+            fi
+            
+            if [ ! -z "$MISSING_CONFIGS" ]; then
+              echo "❌ 错误: 以下必要配置未启用:${MISSING_CONFIGS}"
+              echo "编译可能会失败或功能不完整"
+              exit 1
+            else
+              echo "✓ 所有必要配置已正确启用"
+            fi
+            
+          else
+            echo "❌ 错误: 配置文件 out/.config 不存在！"
+            echo "配置生成阶段可能失败"
+            exit 1
+          fi
 
       - name: 编译内核
         run: |
@@ -119,6 +187,7 @@ jobs:
             LD=ld.lld \
             CROSS_COMPILE=$CROSS_COMPILE \
             CLANG_TRIPLE=$CLANG_TRIPLE \
+            LLVM=1 \
             -j$(nproc --all)
 
       - name: 打包AnyKernel3
@@ -179,4 +248,4 @@ jobs:
             Android 版本：${{ env.ANDROID_VERSION }}
           files: ./release_zips/*.zip
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}1
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
