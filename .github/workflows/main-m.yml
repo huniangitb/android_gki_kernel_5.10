@@ -34,7 +34,7 @@ jobs:
       - name: 安装基础依赖
         run: |
           sudo apt update
-          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils pahole
+          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
 
       - name: 初始化源码仓库
         run: |
@@ -65,8 +65,8 @@ jobs:
           cd kernel_workspace
           # 下载 Clang
           wget -q -c --show-progress https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz -O clang.tar.gz
-          mkdir -p prebuilts/clang/host/linux-x86/clang-r584948b
-          tar -xzf clang.tar.gz -C prebuilts/clang/host/linux-x86/clang-r584948b
+          mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
+          tar -xzf clang.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
           
           # 下载 GCC
           wget -q -c --show-progress https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/aarch64-linux-android-4.9-refs_tags_android-12.1.0_r27.tar.gz -O gcc.tar.gz
@@ -81,35 +81,44 @@ jobs:
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
 
-      - name: 配置构建环境
+      - name: 配置构建环境 (修复 Clang/GCC 路径)
         run: |
           cd kernel_workspace
+          
           # 禁用 MLGO
           sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
           
-          # 设置工具链路径
-          CLANG_BIN="$(pwd)/prebuilts/clang/host/linux-x86/clang-r584948b/bin"
-          GCC_BIN="$(pwd)/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin"
-          export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
-          clang -v
-          # 注入配置
-          sed -i "/^CLANG_PREBUILT_BIN=/c\CLANG_PREBUILT_BIN=$CLANG_BIN" common/build.config.common
-          sed -i "/^CROSS_COMPILE=/c\CROSS_COMPILE=$GCC_BIN/aarch64-linux-gnu-" common/build.config.aarch64
+          # 删除原有的 CLANG_PREBUILT_BIN 行（如果存在）
+          sed -i '/^CLANG_PREBUILT_BIN=/d' common/build.config.common
+          # 添加正确的 Clang 相对路径
+          echo "CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r584948b/bin" >> common/build.config.common
           
-          # 移除检查
+          # 删除原有的 CROSS_COMPILE 行（如果存在）
+          sed -i '/^CROSS_COMPILE=/d' common/build.config.aarch64
+          # 添加正确的 GCC 交叉编译路径
+          echo "CROSS_COMPILE=prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-gnu-" >> common/build.config.aarch64
+          
+          # 强制使用 Clang 作为 CC
+          echo "CC=clang" >> common/build.config.common
+          echo "KBUILD_VERBOSE=0" >> common/build.config.common
+          
+          # 移除 defconfig 检查
           sed -i 's/check_defconfig//' ./common/build.config.gki
           
-          # 修复 dd
+          # 修复 dd 路径问题
           if [[ -f "common/scripts/link-vmlinux.sh" ]]; then
             sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' common/scripts/link-vmlinux.sh
           fi
+          
+          # 验证配置
+          echo "=== build.config.common 中的 Clang 配置 ==="
+          grep -E "CLANG_PREBUILT_BIN|CC" common/build.config.common || true
+          echo "=== build.config.aarch64 中的 GCC 配置 ==="
+          grep "CROSS_COMPILE" common/build.config.aarch64 || true
 
       - name: 构建内核
         run: |
           cd kernel_workspace
-          CLANG_BIN="$(pwd)/prebuilts/clang/host/linux-x86/clang-r584948b/bin"
-          GCC_BIN="$(pwd)/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin"
-          export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
 
       - name: 整理工件
@@ -133,7 +142,12 @@ jobs:
           git clone https://github.com/Winkmoon/AnyKernel3 --depth=1
           rm -rf ./AnyKernel3/.git
           IMAGE_FILE=$(find . -name Image | head -n1)
-          cp "$IMAGE_FILE" AnyKernel3/
+          if [[ -f "$IMAGE_FILE" ]]; then
+            cp "$IMAGE_FILE" AnyKernel3/
+          else
+            echo "错误：未找到 Image 文件！"
+            exit 1
+          fi
           cd AnyKernel3
           echo "${{ env.KERNEL_VERSION }}" > kernel_version.txt
           zip -r "../AnyKernel3_${{ env.KERNEL_VERSION }}.zip" ./*
