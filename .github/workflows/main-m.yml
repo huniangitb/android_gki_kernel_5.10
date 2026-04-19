@@ -1,4 +1,4 @@
-name: kerne-cust-m
+name: kerne-cust-btf
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
@@ -6,12 +6,6 @@ env:
   ANDROID_VERSION: 'android12'
   KERNEL_VERSION: '5.10.246'
   KERNEL_NAME: 'cust'
-  REPO_URL: 'https://mirrors.tuna.tsinghua.edu.cn/git/git-repo'
-  # 定义工具链URL
-  GCC_URL: 'https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/aarch64-linux-android-4.9-refs_tags_android-12.1.0_r27.tar.gz'
-  CLANG_URL: 'https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz'
-  # 定义内核源码URL (与之前保持一致)
-  KERNEL_SOURCE_URL: 'https://github.com/ztc1997/android_gki_kernel_5.10_common'
 
 on:
   workflow_dispatch:
@@ -40,175 +34,111 @@ jobs:
       - name: 安装基础依赖
         run: |
           sudo apt update
-          sudo apt install -y bc bison build-essential curl ca-certificates \
-          flex git kmod libelf-dev libssl-dev lz4 make ncurses-dev \
-          openssl python3 python3-pip wget xz-utils zstd cpio \
-          # 安装pahole
-          sudo apt install -y dwarves
+          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils pahole
 
-      - name: 创建目录并下载工具链和源码
+      - name: 初始化源码仓库
         run: |
-          # 创建工作目录
-          mkdir -p $GITHUB_WORKSPACE/kernel_workspace
-          cd $GITHUB_WORKSPACE/kernel_workspace
-          
-          # 下载GCC工具链
-          wget -q -c ${{ env.GCC_URL }} -O gcc-aarch64.tar.gz
-          mkdir -p gcc && tar -xf gcc-aarch64.tar.gz -C gcc
-          
-          # 下载Clang工具链
-          wget -q -c ${{ env.CLANG_URL }} -O clang.tar.gz
-          mkdir -p clang && tar -xf clang.tar.gz -C clang
-          
-          # 克隆内核源码
-          git clone --depth=1 ${{ env.KERNEL_SOURCE_URL }} -b android12-5.10-2025-09 kernel
+          rm -rf kernel_workspace && mkdir kernel_workspace && cd kernel_workspace
+          wget -q -c --show-progress --timeout=30 --tries=30 \
+            https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/common-android12-5.10.tar.zst \
+            -O common-android12-5.10.tar.zst
+          tar -I zstd -xf common-android12-5.10.tar.zst
+          rm -rf common 2>/dev/null || true
+          git clone --depth=1 https://github.com/ztc1997/android_gki_kernel_5.10_common common -b android12-5.10-2025-09
+          rm common/android/abi_gki_protected_exports_* 2>/dev/null || true
+          for f in common/scripts/setlocalversion; do
+            sed -i 's/ -dirty//g' "$f"
+            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
+          done
 
-      - name: 修改内核配置
+      - name: 直接修改 gki_defconfig
         run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace/kernel
+          cd kernel_workspace
+          DEFCONFIG_PATH="common/arch/arm64/configs/gki_defconfig"
+          echo -e "\n# Custom additions" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG_PATH"
+
+      - name: 下载并安装工具链 (Clang & GCC)
+        run: |
+          cd kernel_workspace
+          # 下载 Clang
+          wget -q -c --show-progress https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz -O clang.tar.gz
+          mkdir -p prebuilts/clang/host/linux-x86/clang-r584948b
+          tar -xzf clang.tar.gz -C prebuilts/clang/host/linux-x86/clang-r584948b
           
-          # 修复 Makefile 中的 regalloc 问题
-          sed -i '/regalloc-enable-advisor=release/s/^/# /' Makefile
+          # 下载 GCC
+          wget -q -c --show-progress https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/aarch64-linux-android-4.9-refs_tags_android-12.1.0_r27.tar.gz -O gcc.tar.gz
+          mkdir -p prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
+          tar -xzf gcc.tar.gz -C prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
+
+      - name: 添加内核名称后缀
+        run: |
+          cd kernel_workspace
+          suffix="${{ github.event.inputs.kernel_suffix || env.KERNEL_NAME }}"
+          for f in ./common/scripts/setlocalversion; do
+            sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
+          done
+
+      - name: 配置构建环境
+        run: |
+          cd kernel_workspace
+          # 禁用 MLGO
+          sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
           
           # 设置工具链路径
-          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
-          export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
+          CLANG_BIN="$(pwd)/prebuilts/clang/host/linux-x86/clang-r584948b/bin"
+          GCC_BIN="$(pwd)/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin"
           
-          clang -v
-          ls $GITHUB_WORKSPACE/kernel_workspace/gcc/bin
+          # 注入配置
+          echo "CLANG_PREBUILT_BIN=$CLANG_BIN" >> common/build.config.common
+          echo "CROSS_COMPILE=$GCC_BIN/aarch64-linux-gnu-" >> common/build.config.aarch64
           
-          # 清理配置
-          make ARCH=arm64 mrproper CC=clang LD=ld.lld \
-            CROSS_COMPILE=$CROSS_COMPILE \
-            CLANG_TRIPLE=$CLANG_TRIPLE
+          # 移除检查
+          sed -i 's/check_defconfig//' ./common/build.config.gki
           
-          # 添加自定义配置
-          echo 'CONFIG_TMPFS_POSIX_ACL=y' >> arch/arm64/configs/gki_defconfig
-          echo 'CONFIG_TMPFS_XATTR=y' >> arch/arm64/configs/gki_defconfig
-          echo 'CONFIG_DEBUG_INFO_BTF=y' >> arch/arm64/configs/gki_defconfig
-          sed -i 's/CONFIG_LTO_CLANG_FULL=y/CONFIG_LTO_CLANG_THIN=y/g' arch/arm64/configs/gki_defconfig
-          
-          # 生成配置
-          make ARCH=arm64 CC=clang LD=ld.lld \
-            CROSS_COMPILE=$CROSS_COMPILE \
-            CLANG_TRIPLE=$CLANG_TRIPLE \
-            O=out \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            gki_defconfig
-
-      - name: 检查配置选项是否生效
-        run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace/kernel
-          
-          echo "=========================================="
-          echo "检查内核配置选项状态"
-          echo "=========================================="
-          
-          # 定义需要检查的配置列表
-          CONFIG_LIST="CONFIG_TMPFS_POSIX_ACL CONFIG_TMPFS_XATTR CONFIG_DEBUG_INFO_BTF CONFIG_LTO_CLANG_THIN"
-          
-          # 检查配置文件是否存在
-          if [ -f out/.config ]; then
-            echo "✓ 找到配置文件: out/.config"
-            echo ""
-            
-            # 逐项检查配置
-            for config in $CONFIG_LIST; do
-              if grep -q "^${config}=y" out/.config; then
-                echo "✓ ${config}=y [已启用]"
-              elif grep -q "^${config}=m" out/.config; then
-                echo "⚠ ${config}=m [编译为模块]"
-              elif grep -q "^${config}=n" out/.config; then
-                echo "✗ ${config}=n [已禁用]"
-              elif grep -q "^# ${config} is not set" out/.config; then
-                echo "✗ ${config} [未设置]"
-              else
-                echo "? ${config} [未找到]"
-              fi
-            done
-            
-            echo ""
-            echo "=========================================="
-            echo "详细配置信息:"
-            echo "=========================================="
-            grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_DEBUG_INFO_BTF|CONFIG_LTO_CLANG" out/.config || true
-            
-            # 检查 BTF 相关依赖
-            echo ""
-            echo "=========================================="
-            echo "BTF 相关依赖检查:"
-            echo "=========================================="
-            grep -E "CONFIG_DEBUG_INFO|CONFIG_DEBUG_INFO_BTF|CONFIG_PAHOLE_HAS_SPLIT_BTF|CONFIG_BPF" out/.config | head -20 || true
-            
-            # 验证关键配置
-            echo ""
-            echo "=========================================="
-            echo "配置验证结果:"
-            echo "=========================================="
-            MISSING_CONFIGS=""
-            for config in CONFIG_TMPFS_POSIX_ACL CONFIG_TMPFS_XATTR; do
-              if ! grep -q "^${config}=y" out/.config; then
-                MISSING_CONFIGS="${MISSING_CONFIGS} ${config}"
-              fi
-            done
-            
-            # BTF 允许模块形式，但最好启用
-            if ! grep -q "CONFIG_DEBUG_INFO_BTF=y" out/.config; then
-              echo "⚠ 警告: CONFIG_DEBUG_INFO_BTF 未启用为 y，BTF 生成可能失败"
-            fi
-            
-            if [ ! -z "$MISSING_CONFIGS" ]; then
-              echo "❌ 错误: 以下必要配置未启用:${MISSING_CONFIGS}"
-              echo "编译可能会失败或功能不完整"
-              exit 1
-            else
-              echo "✓ 所有必要配置已正确启用"
-            fi
-            
-          else
-            echo "❌ 错误: 配置文件 out/.config 不存在！"
-            echo "配置生成阶段可能失败"
-            exit 1
+          # 修复 dd
+          if [[ -f "common/scripts/link-vmlinux.sh" ]]; then
+            sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' common/scripts/link-vmlinux.sh
           fi
 
-      - name: 编译内核
+      - name: 构建内核
         run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace
-          # 设置工具链路径
-          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
-          export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          
-          # 开始编译，使用所有CPU核心
-          make -C kernel O=out ARCH=arm64 \
-            CC=clang \
-            LD=ld.lld \
-            CROSS_COMPILE=$CROSS_COMPILE \
-            CLANG_TRIPLE=$CLANG_TRIPLE \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            -j$(nproc --all)
+          cd kernel_workspace
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
 
-      - name: 打包AnyKernel3
+      - name: 整理工件
         run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace
+          cd kernel_workspace
+          mkdir -p build_artifacts
+          cp out/android12-5.10/common/.config build_artifacts/config || true
+          cp out/android12-5.10/common/Module.symvers build_artifacts/ || true
+          cp out/android12-5.10/common/abi_symbollist.raw build_artifacts/ || true
+          cp build/abi/compare_to_symbol_list build_artifacts/ || true
+
+      - name: 上传构建工件
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel_Build_Artifacts
+          path: kernel_workspace/build_artifacts/
+
+      - name: 打包 AnyKernel3
+        run: |
+          cd kernel_workspace
           git clone https://github.com/Winkmoon/AnyKernel3 --depth=1
           rm -rf ./AnyKernel3/.git
-          # 复制内核镜像
-          cp kernel/out/arch/arm64/boot/Image AnyKernel3/
-          # 添加内核版本信息
-          echo "${{ env.KERNEL_VERSION }}" > AnyKernel3/kernel_version.txt
+          IMAGE_FILE=$(find . -name Image | head -n1)
+          cp "$IMAGE_FILE" AnyKernel3/
           cd AnyKernel3
-          ZIPNAME="AnyKernel3_${{ env.KERNEL_VERSION }}.zip"
-          zip -r "../$ZIPNAME" ./*
+          echo "${{ env.KERNEL_VERSION }}" > kernel_version.txt
+          zip -r "../AnyKernel3_${{ env.KERNEL_VERSION }}.zip" ./*
 
-      - name: 上传ZIP工件
+      - name: 上传 ZIP 工件
         uses: actions/upload-artifact@v4
         with:
           name: Kernel_ZIP_Artifacts
-          path: ${{ github.workspace }}/kernel_workspace/*.zip
+          path: kernel_workspace/*.zip
 
   release:
     needs: build
@@ -216,37 +146,29 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: 下载ZIP工件
+      - name: 下载 ZIP 工件
         uses: actions/download-artifact@v4
         with:
           name: Kernel_ZIP_Artifacts
           path: ./release_zips
 
-      - name: 创建Release
+      - name: 准备发布
         id: vars
         run: |
           ZIP_FILE=$(ls ./release_zips/*.zip | head -n1)
           KERNEL_VER=$(unzip -p "$ZIP_FILE" kernel_version.txt 2>/dev/null || echo "${{ env.KERNEL_VERSION }}")
-          suffix="${{ github.event.inputs.kernel_suffix }}"
-          [ -z "$suffix" ] && suffix="${{ env.KERNEL_NAME }}"
-          FULL_VERSION="${KERNEL_VER}-${suffix}"
+          SUFFIX="${{ github.event.inputs.kernel_suffix || env.KERNEL_NAME }}"
+          FULL_VERSION="${KERNEL_VER}-${SUFFIX}"
           TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
-          TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
-          TAG_NAME="${{ env.KERNEL_VERSION }}-${{ env.KERNEL_NAME }}-${TIME}"
           echo "FULL_VERSION=${FULL_VERSION}" >> $GITHUB_ENV
-          echo "TIME_FORM=${TIME_FORM}" >> $GITHUB_ENV
-          echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
+          echo "TAG_NAME=${KERNEL_VER}-${SUFFIX}-${TIME}" >> $GITHUB_ENV
 
-      - name: 发布Release
+      - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
           name: "内核 ${{ env.FULL_VERSION }}"
-          body: |
-            自动构建于 ${{ env.TIME_FORM }}
-            内核版本：${{ env.FULL_VERSION }}
-            设备：${{ env.CPU }} / ${{ env.FEIL }}
-            Android 版本：${{ env.ANDROID_VERSION }}
+          body: "自动构建于 ${{ env.TAG_NAME }}"
           files: ./release_zips/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
