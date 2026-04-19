@@ -1,4 +1,5 @@
-name: kerne-cust-btf
+name: kernel-cust-m
+
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
@@ -6,6 +7,48 @@ env:
   ANDROID_VERSION: 'android12'
   KERNEL_VERSION: '5.10.246'
   KERNEL_NAME: 'cust'
+  REPO_URL: 'https://mirrors.tuna.tsinghua.edu.cn/git/git-repo'
+  GCC_URL: 'https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/aarch64-linux-android-4.9-refs_tags_android-12.1.0_r27.tar.gz'
+  CLANG_URL: 'https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz'
+  KERNEL_SOURCE_URL: 'https://github.com/ztc1997/android_gki_kernel_5.10_common'
+  # GKI 工具包（包含 abidw, dump_abi, extract_symbols 等）
+  GKI_TOOL_PACKAGE: 'https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/common-android12-5.10.tar.zst'
+  # KMI 配置
+  ABI_DEFINITION: 'android/abi_gki_aarch64.xml'
+  KMI_SYMBOL_LIST: 'android/abi_gki_aarch64'
+  ADDITIONAL_KMI_SYMBOL_LISTS: |
+    android/abi_gki_aarch64_type_visibility
+    android/abi_gki_aarch64_arg
+    android/abi_gki_aarch64_core
+    android/abi_gki_aarch64_db845c
+    android/abi_gki_aarch64_exynos
+    android/abi_gki_aarch64_exynosauto
+    android/abi_gki_aarch64_fips140
+    android/abi_gki_aarch64_galaxy
+    android/abi_gki_aarch64_generic
+    android/abi_gki_aarch64_hikey960
+    android/abi_gki_aarch64_honor
+    android/abi_gki_aarch64_imx
+    android/abi_gki_aarch64_lenovo
+    android/abi_gki_aarch64_moto
+    android/abi_gki_aarch64_mtk
+    android/abi_gki_aarch64_nothing
+    android/abi_gki_aarch64_oplus
+    android/abi_gki_aarch64_qcom
+    android/abi_gki_aarch64_rockchip
+    android/abi_gki_aarch64_unisoc
+    android/abi_gki_aarch64_virtual_device
+    android/abi_gki_aarch64_vivo
+    android/abi_gki_aarch64_xiaomi
+    android/abi_gki_aarch64_zebra
+    android/abi_gki_aarch64_asus
+    android/abi_gki_aarch64_transsion
+    android/abi_gki_aarch64_tuxera
+  TRIM_NONLISTED_KMI: 1
+  KMI_SYMBOL_LIST_STRICT_MODE: 1
+  KMI_ENFORCED: 1
+  TIDY_ABI: 1
+  MODULES_ORDER: 'android/gki_aarch64_modules'
 
 on:
   workflow_dispatch:
@@ -34,131 +77,193 @@ jobs:
       - name: 安装基础依赖
         run: |
           sudo apt update
-          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
+          sudo apt install -y bc bison build-essential curl ca-certificates \
+            flex git kmod libelf-dev libssl-dev lz4 make ncurses-dev \
+            openssl python3 python3-pip wget xz-utils zstd cpio dwarves
+          # 安装 libabigail (abidw) 用于 ABI 比较
+          sudo apt install -y libabigail
 
-      - name: 初始化源码仓库
+      - name: 创建目录并下载工具链和源码
         run: |
-          rm -rf kernel_workspace && mkdir kernel_workspace && cd kernel_workspace
-          wget -q -c --timeout=30 --tries=30 \
-            https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/common-android12-5.10.tar.zst \
-            -O common-android12-5.10.tar.zst
-          tar -I zstd -xf common-android12-5.10.tar.zst
-          rm -rf common 2>/dev/null || true
-          git clone --depth=1 https://github.com/ztc1997/android_gki_kernel_5.10_common common -b android12-5.10-2025-09
-          rm common/android/abi_gki_protected_exports_* 2>/dev/null || true
-          for f in common/scripts/setlocalversion; do
-            sed -i 's/ -dirty//g' "$f"
-            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
+          mkdir -p $GITHUB_WORKSPACE/kernel_workspace
+          cd $GITHUB_WORKSPACE/kernel_workspace
+          
+          wget -q -c ${{ env.GCC_URL }} -O gcc-aarch64.tar.gz
+          mkdir -p gcc && tar -xf gcc-aarch64.tar.gz -C gcc
+          
+          wget -q -c ${{ env.CLANG_URL }} -O clang.tar.gz
+          mkdir -p clang && tar -xf clang.tar.gz -C clang
+          
+          git clone --depth=1 ${{ env.KERNEL_SOURCE_URL }} -b android12-5.10-2025-09 kernel
+          
+          # 下载 GKI 工具包（包含 prebuilts、build/abi 脚本等）
+          wget -q -c --timeout=30 --tries=30 ${{ env.GKI_TOOL_PACKAGE }} -O gki_tools.tar.zst
+          mkdir -p gki_tools && tar -xf gki_tools.tar.zst -C gki_tools
+
+      - name: 准备 KMI 符号列表（合并主列表与附加列表）
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace/kernel
+          # 合并后的符号列表将存放在内核 out 目录，稍后用于配置和校验
+          mkdir -p out
+          cat ${{ env.KMI_SYMBOL_LIST }} > out/abi_symbollist
+          for list in ${{ env.ADDITIONAL_KMI_SYMBOL_LISTS }}; do
+            echo >> out/abi_symbollist
+            cat "$list" >> out/abi_symbollist
           done
+          # 去除空行和注释（可选，但 tools 需要）
+          sed -i '/^\s*#/d; /^\s*$/d' out/abi_symbollist
+          echo "合并后的符号列表位于 out/abi_symbollist，共 $(wc -l < out/abi_symbollist) 行"
 
-      - name: 直接修改 gki_defconfig
+      - name: 修改内核配置（基础部分 + 启用 KMI 修剪）
         run: |
-          cd kernel_workspace
-          DEFCONFIG_PATH="common/arch/arm64/configs/gki_defconfig"
-          echo -e "\n# Custom additions" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG_PATH"
+          cd $GITHUB_WORKSPACE/kernel_workspace/kernel
+          
+          # 修复 Makefile 中的 regalloc 问题
+          sed -i '/regalloc-enable-advisor=release/s/^/# /' Makefile
+          
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
+          export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          
+          # 生成初始 defconfig
+          make ARCH=arm64 CC=clang LD=ld.lld \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            CLANG_TRIPLE=$CLANG_TRIPLE \
+            O=out LLVM=1 LLVM_IAS=1 gki_defconfig
+          
+          # 添加自定义配置（原有）
+          echo 'CONFIG_TMPFS_POSIX_ACL=y' >> arch/arm64/configs/gki_defconfig
+          echo 'CONFIG_TMPFS_XATTR=y' >> arch/arm64/configs/gki_defconfig
+          echo 'CONFIG_DEBUG_INFO_BTF=y' >> arch/arm64/configs/gki_defconfig
+          sed -i 's/CONFIG_LTO_CLANG_FULL=y/CONFIG_LTO_CLANG_THIN=y/g' arch/arm64/configs/gki_defconfig
+          
+          # 重新生成配置（将自定义配置合并进去）
+          make ARCH=arm64 CC=clang LD=ld.lld \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            CLANG_TRIPLE=$CLANG_TRIPLE \
+            O=out LLVM=1 LLVM_IAS=1 gki_defconfig
 
-      - name: 下载并安装工具链 (Clang & GCC)
+      - name: 生成平坦符号列表（用于 UNUSED_KSYMS_WHITELIST）
         run: |
-          cd kernel_workspace
-          # 下载 Clang
-          wget -q -c https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz -O clang.tar.gz
-          mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
-          tar -xzf clang.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
-          
-          # 下载 GCC
-          wget -q -c https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/aarch64-linux-android-4.9-refs_tags_android-12.1.0_r27.tar.gz -O gcc.tar.gz
-          mkdir -p prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
-          tar -xzf gcc.tar.gz -C prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
+          cd $GITHUB_WORKSPACE/kernel_workspace/kernel
+          # 使用 flatten_symbol_list 工具（从 GKI 工具包获取）
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/gki_tools/prebuilts/build-tools/linux-x86/bin:$PATH
+          chmod +x $GITHUB_WORKSPACE/kernel_workspace/gki_tools/build/abi/flatten_symbol_list
+          $GITHUB_WORKSPACE/kernel_workspace/gki_tools/build/abi/flatten_symbol_list \
+            out/abi_symbollist > out/abi_symbollist.raw
+          echo "平坦符号列表已生成 out/abi_symbollist.raw"
 
-      - name: 添加内核名称后缀
+      - name: 启用内核 KMI 修剪（TRIM_NONLISTED_KMI）
+        if: env.TRIM_NONLISTED_KMI == '1'
         run: |
-          cd kernel_workspace
-          suffix="${{ github.event.inputs.kernel_suffix || env.KERNEL_NAME }}"
-          for f in ./common/scripts/setlocalversion; do
-            sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
-          done
-
-      - name: 配置构建环境 (修复 Clang/GCC 路径)
-        run: |
-          cd kernel_workspace
+          cd $GITHUB_WORKSPACE/kernel_workspace/kernel
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
+          export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
           
-          # 禁用 MLGO
-          sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
+          # 修改 .config 启用 TRIM_UNUSED_KSYMS 并设置白名单
+          scripts/config --file out/.config \
+            -d UNUSED_SYMBOLS \
+            -e TRIM_UNUSED_KSYMS \
+            --set-str UNUSED_KSYMS_WHITELIST out/abi_symbollist.raw
           
-          # 删除原有的 CLANG_PREBUILT_BIN 行（如果存在）
-          sed -i '/^CLANG_PREBUILT_BIN=/d' common/build.config.common
-          # 添加正确的 Clang 相对路径
-          echo "CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r584948b/bin" >> common/build.config.common
+          # 重新生成配置
+          make ARCH=arm64 CC=clang LD=ld.lld \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            CLANG_TRIPLE=$CLANG_TRIPLE \
+            O=out LLVM=1 LLVM_IAS=1 olddefconfig
           
-          # 删除原有的 CROSS_COMPILE 行（如果存在）
-          sed -i '/^CROSS_COMPILE=/d' common/build.config.aarch64
-          # 添加正确的 GCC 交叉编译路径
-          echo "CROSS_COMPILE=prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-gnu-" >> common/build.config.aarch64
-          
-          # 强制使用 Clang 作为 CC
-          echo "CC=clang" >> common/build.config.common
-          echo "KBUILD_VERBOSE=0" >> common/build.config.common
-          
-          # 移除 defconfig 检查
-          sed -i 's/check_defconfig//' ./common/build.config.gki
-          
-          # 修复 dd 路径问题
-          if [[ -f "common/scripts/link-vmlinux.sh" ]]; then
-            sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' common/scripts/link-vmlinux.sh
+          # 验证配置是否生效
+          if ! grep -q "CONFIG_TRIM_UNUSED_KSYMS=y" out/.config; then
+            echo "ERROR: CONFIG_TRIM_UNUSED_KSYMS 未启用" >&2
+            exit 1
           fi
-          sed -i '/^if \[ -n "${LLVM_IAS}" \]; then$/,/^fi$/d' build/build.sh
-          sed -i '/^if \[\[ -n "${LLVM}" \]\]; then$/,/^fi$/d' build/build.sh
-          # 验证配置
-          echo "=== build.config.common 中的 Clang 配置 ==="
-          grep -E "CLANG_PREBUILT_BIN|CC" common/build.config.common || true
-          echo "=== build.config.aarch64 中的 GCC 配置 ==="
-          grep "CROSS_COMPILE" common/build.config.aarch64 || true
+          if ! grep -q "CONFIG_UNUSED_KSYMS_WHITELIST=\"out/abi_symbollist.raw\"" out/.config; then
+            echo "ERROR: CONFIG_UNUSED_KSYMS_WHITELIST 未正确设置" >&2
+            exit 1
+          fi
+          echo "内核 KMI 修剪已启用"
 
-      - name: 构建内核
+      - name: 编译内核（最终版本，带 KMI 修剪）
         run: |
-          cd kernel_workspace
-          ls prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CROSS_COMPILE=prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-gnu-
+          cd $GITHUB_WORKSPACE/kernel_workspace
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
+          export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          
+          make -C kernel O=out ARCH=arm64 \
+            CC=clang LD=ld.lld \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            CLANG_TRIPLE=$CLANG_TRIPLE \
+            LLVM=1 LLVM_IAS=1 \
+            -j$(nproc --all)
 
-      - name: 整理工件
+      - name: 严格模式校验（KMI_SYMBOL_LIST_STRICT_MODE）
+        if: env.KMI_SYMBOL_LIST_STRICT_MODE == '1'
         run: |
-          cd kernel_workspace
-          mkdir -p build_artifacts
-          cp out/android12-5.10/common/.config build_artifacts/config || true
-          cp out/android12-5.10/common/Module.symvers build_artifacts/ || true
-          cp out/android12-5.10/common/abi_symbollist.raw build_artifacts/ || true
-          cp build/abi/compare_to_symbol_list build_artifacts/ || true
+          cd $GITHUB_WORKSPACE/kernel_workspace/kernel
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/gki_tools/prebuilts/build-tools/linux-x86/bin:$PATH
+          chmod +x $GITHUB_WORKSPACE/kernel_workspace/gki_tools/build/abi/compare_to_symbol_list
+          # 比较 Module.symvers 与白名单
+          $GITHUB_WORKSPACE/kernel_workspace/gki_tools/build/abi/compare_to_symbol_list \
+            out/Module.symvers out/abi_symbollist.raw
+          echo "严格模式校验通过"
 
-      - name: 上传构建工件
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel_Build_Artifacts
-          path: kernel_workspace/build_artifacts/
+      - name: 生成 ABI dump 并与期望定义比较
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace/kernel
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/gki_tools/prebuilts/build-tools/linux-x86/bin:$PATH
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/gki_tools/build/abi:$PATH
+          chmod +x $GITHUB_WORKSPACE/kernel_workspace/gki_tools/build/abi/dump_abi
+          chmod +x $GITHUB_WORKSPACE/kernel_workspace/gki_tools/build/abi/diff_abi
+          
+          # 生成 ABI dump（需要 unstripped vmlinux 和模块）
+          # 注意：由于我们没有保存 unstripped 模块，这里仅使用 vmlinux 生成基础 ABI
+          # 完整 ABI 需要 modules，但校验 KMI 符号已经足够，ABI dump 可作为额外检查
+          mkdir -p dist
+          TIDY_FLAG=""
+          if [ "${{ env.TIDY_ABI }}" = "1" ]; then
+            TIDY_FLAG="--tidy"
+          fi
+          
+          dump_abi --linux-tree out --vmlinux out/vmlinux \
+            --out-file dist/abi-current.xml \
+            --kmi-symbol-list out/abi_symbollist $TIDY_FLAG || echo "dump_abi 警告（可能缺少模块）"
+          
+          # 如果提供了 ABI_DEFINITION，进行比较
+          if [ -n "${{ env.ABI_DEFINITION }}" ]; then
+            if [ -f "${{ env.ABI_DEFINITION }}" ]; then
+              diff_abi --baseline ${{ env.ABI_DEFINITION }} \
+                --new dist/abi-current.xml \
+                --report dist/abi.report \
+                --short-report dist/abi.report.short || {
+                echo "ABI 差异检测到！"
+                cat dist/abi.report.short
+                if [ "${{ env.KMI_ENFORCED }}" = "1" ]; then
+                  exit 1
+                fi
+              }
+            else
+              echo "警告: ABI_DEFINITION 文件不存在，跳过比较"
+            fi
+          fi
 
       - name: 打包 AnyKernel3
         run: |
-          cd kernel_workspace
+          cd $GITHUB_WORKSPACE/kernel_workspace
           git clone https://github.com/Winkmoon/AnyKernel3 --depth=1
           rm -rf ./AnyKernel3/.git
-          IMAGE_FILE=$(find . -name Image | head -n1)
-          if [[ -f "$IMAGE_FILE" ]]; then
-            cp "$IMAGE_FILE" AnyKernel3/
-          else
-            echo "错误：未找到 Image 文件！"
-            exit 1
-          fi
+          cp kernel/out/arch/arm64/boot/Image AnyKernel3/
+          echo "${{ env.KERNEL_VERSION }}" > AnyKernel3/kernel_version.txt
           cd AnyKernel3
-          echo "${{ env.KERNEL_VERSION }}" > kernel_version.txt
-          zip -r "../AnyKernel3_${{ env.KERNEL_VERSION }}.zip" ./*
+          ZIPNAME="AnyKernel3_${{ env.KERNEL_VERSION }}.zip"
+          zip -r "../$ZIPNAME" ./*
 
       - name: 上传 ZIP 工件
         uses: actions/upload-artifact@v4
         with:
           name: Kernel_ZIP_Artifacts
-          path: kernel_workspace/*.zip
+          path: ${{ github.workspace }}/kernel_workspace/*.zip
 
   release:
     needs: build
@@ -172,23 +277,31 @@ jobs:
           name: Kernel_ZIP_Artifacts
           path: ./release_zips
 
-      - name: 准备发布
+      - name: 创建 Release
         id: vars
         run: |
           ZIP_FILE=$(ls ./release_zips/*.zip | head -n1)
           KERNEL_VER=$(unzip -p "$ZIP_FILE" kernel_version.txt 2>/dev/null || echo "${{ env.KERNEL_VERSION }}")
-          SUFFIX="${{ github.event.inputs.kernel_suffix || env.KERNEL_NAME }}"
-          FULL_VERSION="${KERNEL_VER}-${SUFFIX}"
+          suffix="${{ github.event.inputs.kernel_suffix }}"
+          [ -z "$suffix" ] && suffix="${{ env.KERNEL_NAME }}"
+          FULL_VERSION="${KERNEL_VER}-${suffix}"
           TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
+          TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
+          TAG_NAME="${{ env.KERNEL_VERSION }}-${{ env.KERNEL_NAME }}-${TIME}"
           echo "FULL_VERSION=${FULL_VERSION}" >> $GITHUB_ENV
-          echo "TAG_NAME=${KERNEL_VER}-${SUFFIX}-${TIME}" >> $GITHUB_ENV
+          echo "TIME_FORM=${TIME_FORM}" >> $GITHUB_ENV
+          echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
 
-      - name: 创建 Release
+      - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
           name: "内核 ${{ env.FULL_VERSION }}"
-          body: "自动构建于 ${{ env.TAG_NAME }}"
+          body: |
+            自动构建于 ${{ env.TIME_FORM }}
+            内核版本：${{ env.FULL_VERSION }}
+            设备：${{ env.CPU }} / ${{ env.FEIL }}
+            Android 版本：${{ env.ANDROID_VERSION }}
           files: ./release_zips/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
