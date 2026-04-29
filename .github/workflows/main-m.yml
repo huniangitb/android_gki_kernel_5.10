@@ -1,4 +1,4 @@
-′name: kernel-cust-m
+name: kernel-cust-m
 
 env:
   TZ: Asia/Shanghai
