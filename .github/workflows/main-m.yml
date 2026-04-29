@@ -5,7 +5,7 @@ env:
   CPU: 'mt6895'
   FEIL: 'redmi+xiaomi'
   ANDROID_VERSION: 'android12'
-  KERNEL_VERSION: '5.10.246'
+  KERNEL_VERSION: '5.10.240'
   KERNEL_NAME: 'cust'
   REPO_URL: 'https://mirrors.tuna.tsinghua.edu.cn/git/git-repo'
   GCC_URL: 'https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/aarch64-linux-android-4.9-refs_tags_android-12.1.0_r27.tar.gz'
@@ -138,7 +138,7 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
-          export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
+          export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-t-
           export CLANG_TRIPLE=aarch64-linux-gnu-
           
           make -C kernel O=out ARCH=arm64 \
