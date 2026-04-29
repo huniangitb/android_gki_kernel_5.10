@@ -1,4 +1,4 @@
-name: kernel-cust-m
+′name: kernel-cust-m
 
 env:
   TZ: Asia/Shanghai
@@ -138,10 +138,10 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
-          export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-t-
+          export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
           export CLANG_TRIPLE=aarch64-linux-gnu-
           
-          make -C kernel O=out ARCH=arm64 \
+          make V=1 -C kernel O=out ARCH=arm64 \
             CC=clang LD=ld.lld \
             CROSS_COMPILE=$CROSS_COMPILE \
             CLANG_TRIPLE=$CLANG_TRIPLE \
