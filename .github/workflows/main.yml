@@ -1,4 +1,4 @@
-name: kerne-cust-btf
+name: kerne-cust-p
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
@@ -32,10 +32,10 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
-      - name: 安装基础依赖（包含 coreutils 解决 dd 缺失）
+      - name: 安装基础依赖（移除 pahole，删除 BTF 支持）
         run: |
           sudo apt update
-          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils pahole
+          sudo apt install -y curl bison flex make binutils dwarves git lld zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
           # 确保 dd 可用
           which dd
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
@@ -55,30 +55,63 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
-      - name: 直接修改 gki_defconfig（添加/移除配置）
+      - name: 下载并应用必需补丁
+        run: |
+          cd kernel_workspace
+          mkdir -p patches
+          # 补丁 1
+          wget -q -O patches/001.fix_sysvipc_kabi.patch \
+            https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch
+          # 补丁 2
+          wget -q -O patches/002.posix_mqueue_abi_padding.patch \
+            https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch
+          # 进入内核源码目录应用补丁
+          cd common
+          patch -p1 < ../patches/001.fix_sysvipc_kabi.patch
+          patch -p1 < ../patches/002.posix_mqueue_abi_padding.patch
+          echo "补丁应用完成"
+
+      - name: 直接修改 gki_defconfig（添加所需配置，移除 BTF）
         run: |
           cd kernel_workspace
           DEFCONFIG_PATH="common/arch/arm64/configs/gki_defconfig"
           echo "===== 修改前配置关键项 ====="
-          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_KASAN" "$DEFCONFIG_PATH" || echo "未找到相关项"
+          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE" "$DEFCONFIG_PATH" || echo "未找到相关项"
           
-          # 添加 tmpfs 扩展属性支持
+          # 添加 tmpfs 扩展属性支持（原有）
           echo -e "\n# Custom additions for tmpfs features" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
           
-          # 开启 BTF 调试信息（用于 BPF）
+          # 删除 BTF 相关配置（如果存在）
+          sed -i '/^CONFIG_DEBUG_INFO_BTF\b/d' "$DEFCONFIG_PATH"
           sed -i '/^CONFIG_DEBUG_INFO\b/d' "$DEFCONFIG_PATH"
           sed -i '/^# CONFIG_DEBUG_INFO is not set\b/d' "$DEFCONFIG_PATH"
-          sed -i '/^CONFIG_DEBUG_INFO_BTF\b/d' "$DEFCONFIG_PATH"
-          echo -e "\n# BTF support" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_DEBUG_INFO=y" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG_PATH"
+          
+          # 添加 DroidSpaces 所需配置
+          cat >> "$DEFCONFIG_PATH" << 'EOF'
+
+# DroidSpaces required configs
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_MQUEUE=y
+CONFIG_IPC_NS=y
+CONFIG_PID_NS=y
+CONFIG_DEVTMPFS=y
+CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+CONFIG_NETFILTER_XT_TARGET_REJECT=y
+CONFIG_NETFILTER_XT_TARGET_LOG=y
+CONFIG_NETFILTER_XT_MATCH_RECENT=y
+CONFIG_IP_SET=y
+CONFIG_IP_SET_HASH_IP=y
+CONFIG_IP_SET_HASH_NET=y
+CONFIG_NETFILTER_XT_SET=y
+CONFIG_DEBUG_INFO_REDUCED=y
+EOF
           
           echo "===== 修改后配置关键项 ====="
-          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_DEBUG_INFO_BTF" "$DEFCONFIG_PATH"
+          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_DEBUG_INFO_REDUCED" "$DEFCONFIG_PATH"
 
-      - name: 下载并安装自定义 Clang (r584948b)
+      - name: 下载并安装自定义 Clang (r584948b)（移除 GCC）
         run: |
           cd kernel_workspace
           echo "正在从 GitHub 下载 Clang r584948b..."
@@ -87,43 +120,13 @@ jobs:
           mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
           tar -xzf clang-r584948b.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
 
-      - name: 下载并安装 GCC 4.9 工具链
-        run: |
-          cd kernel_workspace
-          echo "正在从 GitHub 下载 GCC 4.9 工具链..."
-          wget -q -c --show-progress --timeout=30 --tries=30 ${{ env.GCC_URL }} -O gcc-aarch64.tar.gz
-          echo "正在解压 GCC..."
-          mkdir -p gcc
-          tar -xzf gcc-aarch64.tar.gz -C gcc
-          # 修正：查找 aarch64-linux-android-as 的所在目录（没有 gcc 可执行文件）
-          GCC_BIN_PATH=$(find gcc -type f -name "aarch64-linux-android-as" -exec dirname {} \; | head -n1)
-          if [[ -n "$GCC_BIN_PATH" ]]; then
-            echo "GCC_BIN_PATH=${GCC_BIN_PATH}" >> $GITHUB_ENV
-            echo "找到 GCC 工具目录: ${GCC_BIN_PATH}"
-          else
-            echo "警告: 未找到 aarch64-linux-android-as，将尝试默认路径"
-            # 尝试常见的 bin 目录
-            if [ -d "gcc/bin" ]; then
-              echo "GCC_BIN_PATH=gcc/bin" >> $GITHUB_ENV
-            else
-              # 最后尝试查找任何 bin 目录
-              FALLBACK=$(find gcc -type d -name bin | head -n1)
-              if [ -n "$FALLBACK" ]; then
-                echo "GCC_BIN_PATH=${FALLBACK}" >> $GITHUB_ENV
-              else
-                echo "GCC_BIN_PATH=gcc/bin" >> $GITHUB_ENV   # 占位
-              fi
-            fi
-          fi
-          ls -la gcc/
-
       - name: 打印工具链详细信息
         run: |
           cd kernel_workspace
           CLANG_BASE="prebuilts-master/clang/host/linux-x86/clang-r584948b"
           CLANG_PATH="$(pwd)/${CLANG_BASE}/bin/clang"
           echo "=========================================="
-          echo "Clang 工具链详细信息"
+          echo "Clang 工具链详细信息（已移除 GCC）"
           echo "=========================================="
           echo "编译器路径: ${CLANG_PATH}"
           if [[ -f "${CLANG_PATH}" ]]; then
@@ -132,7 +135,7 @@ jobs:
             echo "错误: 找不到 Clang 编译器！"
             exit 1
           fi
-          
+
       - name: 添加内核名称后缀
         run: |
           cd kernel_workspace
@@ -147,37 +150,36 @@ jobs:
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
 
-      - name: 配置构建环境 (禁用 MLGO，使用新版 Clang + GCC)
+      - name: 配置构建环境（纯 Clang 构建，无 GCC）
         run: |
           cd kernel_workspace
-          # 禁用 MLGO 相关优化（避免与新版 Clang 冲突）
+          # 禁用 MLGO 相关优化
           sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
           
           # 替换 Clang 路径为自定义版本
           CLANG_REL_PATH="prebuilts-master/clang/host/linux-x86/clang-r584948b/bin"
           sed -i "s|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=$CLANG_REL_PATH|" common/build.config.common
-          echo 'CLANG_TRIPLE=aarch64-linux-gnu-' >> common/build.config.common
           
-          # 设置 GCC 交叉编译路径（CROSS_COMPILE 前缀）
-          if [[ -n "$GCC_BIN_PATH" ]]; then
-            GCC_ABS_PATH="$(pwd)/${GCC_BIN_PATH}"
-            echo "CROSS_COMPILE=${GCC_ABS_PATH}/aarch64-linux-android-" >> common/build.config.common
-            echo "LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN=${GCC_ABS_PATH}/aarch64-linux-android-" >> common/build.config.common
-            echo "已配置 GCC 路径: ${GCC_ABS_PATH}"
-          else
-            echo 'CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-' >> common/build.config.common
-            echo "LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-" >> common/build.config.common
-            echo "使用默认 GCC 回退路径"
-          fi
-          cat common/build.config.common
-          ls $GITHUB_WORKSPACE/kernel_workspace/gcc/bin/ 2>/dev/null || echo "警告: gcc/bin 不存在"
+          # 设置纯 Clang 交叉编译参数
+          echo 'CLANG_TRIPLE=aarch64-linux-gnu-' >> common/build.config.common
+          echo 'CROSS_COMPILE=aarch64-linux-gnu-' >> common/build.config.common
+          echo "CC=clang" >> common/build.config.common
+          echo "LD=ld.lld" >> common/build.config.common
+          echo "AR=llvm-ar" >> common/build.config.common
+          echo "NM=llvm-nm" >> common/build.config.common
+          echo "STRIP=llvm-strip" >> common/build.config.common
+          echo "OBJCOPY=llvm-objcopy" >> common/build.config.common
+          echo "OBJDUMP=llvm-objdump" >> common/build.config.common
+          echo "READELF=llvm-readelf" >> common/build.config.common
+          
+          # 移除 GCC 相关变量（如果存在）
+          sed -i '/^LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN/d' common/build.config.common
+          
+          # 设定详细输出
+          echo "V=1" >> common/build.config.common
+          
           # 移除 check_defconfig 检查
           sed -i 's/check_defconfig//' ./common/build.config.gki
-          
-          # 设置编译器详细程度
-          echo "CC=clang" >> common/build.config.common
-          echo "V=1" >> common/build.config.common
-          #echo "KBUILD_VERBOSE=0" >> common/build.config.common
           
           # 修复 dd 路径问题（如果存在）
           LINK_VMLINUX="common/scripts/link-vmlinux.sh"
@@ -185,32 +187,23 @@ jobs:
             sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
           fi
           
-          echo "构建配置完成"
-          cat common/build.config.common | grep -E "CROSS_COMPILE|CLANG_PREBUILT_BIN|CC"
+          echo "构建配置完成（纯 Clang 模式）"
+          cat common/build.config.common | grep -E "CROSS_COMPILE|CLANG_PREBUILT_BIN|CC|LD"
 
-      - name: 构建内核（使用旧版 pahole，移除不兼容 flags）
+      - name: 构建内核（完全使用 Clang，无 BTF）
         run: |
           cd kernel_workspace
           
-          # ========== 新增：将 Clang 和 GCC 工具链加入 PATH ==========
+          # 将 Clang 加入 PATH
           CLANG_BIN="$(pwd)/prebuilts-master/clang/host/linux-x86/clang-r584948b/bin"
-          if [[ -n "$GCC_BIN_PATH" ]]; then
-            GCC_BIN="$(pwd)/${GCC_BIN_PATH}"
-          else
-            GCC_BIN="$(pwd)/gcc/bin"
-          fi
-          export PATH="${CLANG_BIN}:${GCC_BIN}:${PATH}"
+          export PATH="${CLANG_BIN}:${PATH}"
           echo "已更新 PATH：${PATH}"
-          # 验证关键工具是否可执行
           which clang
-          which aarch64-linux-android-as || echo "注意：aarch64-linux-android-as 未在 PATH 中找到"
-          # ========== 结束新增 ==========
-          ls ${GCC_BIN}
+          
           export KBUILD_VERBOSE=0
           export HERMETIC_TOOLCHAIN=0
-          export MAKE_ARGS="${MAKE_ARGS} V=1 CROSS_COMPILE=${GCC_BIN}"
-          # 执行构建，合并 stderr 并过滤无关警告
-          LTO=thin  BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh  V=1 CROSS_COMPILE="${GCC_BIN}/aarch64-linux-android-" 2>&1 | \
+          # 执行构建，过滤无关警告
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh  2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
             { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
           
