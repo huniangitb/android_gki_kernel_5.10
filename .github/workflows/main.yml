@@ -78,8 +78,9 @@ jobs:
           echo "===== 修改前配置关键项 ====="
           grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE" "$DEFCONFIG_PATH" || echo "未找到相关项"
           
-          # 添加 tmpfs 扩展属性支持（原有）
-          echo -e "\n# Custom additions for tmpfs features" >> "$DEFCONFIG_PATH"
+          # 添加 tmpfs 扩展属性支持
+          echo "" >> "$DEFCONFIG_PATH"
+          echo "# Custom additions for tmpfs features" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
           
@@ -88,25 +89,23 @@ jobs:
           sed -i '/^CONFIG_DEBUG_INFO\b/d' "$DEFCONFIG_PATH"
           sed -i '/^# CONFIG_DEBUG_INFO is not set\b/d' "$DEFCONFIG_PATH"
           
-          # 添加 DroidSpaces 所需配置
-          cat >> "$DEFCONFIG_PATH" << 'EOF'
-
-# DroidSpaces required configs
-CONFIG_SYSVIPC=y
-CONFIG_POSIX_MQUEUE=y
-CONFIG_IPC_NS=y
-CONFIG_PID_NS=y
-CONFIG_DEVTMPFS=y
-CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
-CONFIG_NETFILTER_XT_TARGET_REJECT=y
-CONFIG_NETFILTER_XT_TARGET_LOG=y
-CONFIG_NETFILTER_XT_MATCH_RECENT=y
-CONFIG_IP_SET=y
-CONFIG_IP_SET_HASH_IP=y
-CONFIG_IP_SET_HASH_NET=y
-CONFIG_NETFILTER_XT_SET=y
-CONFIG_DEBUG_INFO_REDUCED=y
-EOF
+          # 添加 DroidSpaces 所需配置（每个配置单独 echo）
+          echo "" >> "$DEFCONFIG_PATH"
+          echo "# DroidSpaces required configs" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_SYSVIPC=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_POSIX_MQUEUE=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_IPC_NS=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_PID_NS=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_DEVTMPFS=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_NETFILTER_XT_TARGET_REJECT=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_NETFILTER_XT_TARGET_LOG=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_NETFILTER_XT_MATCH_RECENT=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_IP_SET=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_IP_SET_HASH_IP=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_IP_SET_HASH_NET=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_NETFILTER_XT_SET=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_DEBUG_INFO_REDUCED=y" >> "$DEFCONFIG_PATH"
           
           echo "===== 修改后配置关键项 ====="
           grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_DEBUG_INFO_REDUCED" "$DEFCONFIG_PATH"
