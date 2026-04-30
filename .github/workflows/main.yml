@@ -176,6 +176,7 @@ jobs:
           
           # 设置编译器详细程度
           echo "CC=clang" >> common/build.config.common
+          echo "V=1" >> common/build.config.common
           echo "KBUILD_VERBOSE=0" >> common/build.config.common
           
           # 修复 dd 路径问题（如果存在）
