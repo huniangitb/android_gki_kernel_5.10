@@ -210,7 +210,7 @@ jobs:
           export HERMETIC_TOOLCHAIN=0
           export MAKE_ARGS="${MAKE_ARGS} V=1 CROSS_COMPILE=${GCC_BIN}"
           # 执行构建，合并 stderr 并过滤无关警告
-          LTO=thin  BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh  V=1 CROSS_COMPILE="${GCC_BIN}" 2>&1 | \
+          LTO=thin  BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh  V=1 CROSS_COMPILE="${GCC_BIN}/aarch64-linux-android-" 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
             { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
           
