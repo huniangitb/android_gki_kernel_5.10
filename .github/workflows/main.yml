@@ -6,7 +6,7 @@ env:
   ANDROID_VERSION: 'android12'
   KERNEL_VERSION: '5.10.246'
   KERNEL_NAME: 'cust'
-  REPO_URL: 'https://mirrors.tuna.tsinghua.edu.cn/git/git-repo'
+  GCC_URL: 'https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/aarch64-linux-android-4.9-refs_tags_android-12.1.0_r27.tar.gz'
 
 on:
   workflow_dispatch:
@@ -35,40 +35,21 @@ jobs:
       - name: 安装基础依赖（包含 coreutils 解决 dd 缺失）
         run: |
           sudo apt update
-          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
+          sudo apt install -y curl bison flex make binutils dwarves git lld pahole zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils pahole
           # 确保 dd 可用
           which dd
           sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
 
-      - name: 安装特定版本 pahole (1.22-8) 替换新版
-        run: |
-          # 下载旧版 pahole deb 包
-          wget http://archive.ubuntu.com/ubuntu/pool/universe/d/dwarves/pahole_1.22-8_amd64.deb
-          # 安装依赖 libbpf0（Ubuntu 24.04 中存在）
-          sudo apt install -y libbpf0
-          # 使用 apt 安装本地 deb，自动处理依赖
-          sudo apt install -y ./pahole_1.22-8_amd64.deb
-          # 验证版本
-          echo "Installed pahole version:"
-          pahole --version
-
-      - name: 安装 repo 工具（使用清华镜像）
-        run: |
-          curl -s https://mirrors.tuna.tsinghua.edu.cn/git/git-repo > ~/repo
-          chmod a+x ~/repo
-          sudo mv ~/repo /usr/local/bin/repo
-          git config --global repo.url https://mirrors.tuna.tsinghua.edu.cn/git/git-repo
-
-      - name: 初始化源码仓库（使用清华 AOSP 镜像）
+      - name: 初始化源码仓库（预打包工具包）
         run: |
           rm -rf kernel_workspace && mkdir kernel_workspace && cd kernel_workspace
-          repo init --depth 1 -u https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/manifest -b common-android12-5.10 --repo-url=https://mirrors.tuna.tsinghua.edu.cn/git/git-repo
-          repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle --force-sync
-          rm -rf common
-          echo "正在克隆源码仓库 (分支: android12-5.10-2025-09)..."
+          wget -q -c --show-progress --timeout=30 --tries=30 \
+            https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/common-android12-5.10.tar.zst \
+            -O common-android12-5.10.tar.zst
+          tar -I zstd -xf common-android12-5.10.tar.zst
+          rm -rf common 2>/dev/null || true
           git clone --depth=1 https://github.com/ztc1997/android_gki_kernel_5.10_common common -b android12-5.10-2025-09
-          echo "正在去除 ABI 保护 & 去除 dirty 后缀..."
-          rm common/android/abi_gki_protected_exports_* || echo "不需要去除保护"
+          rm common/android/abi_gki_protected_exports_* 2>/dev/null || true
           for f in common/scripts/setlocalversion; do
             sed -i 's/ -dirty//g' "$f"
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
@@ -106,7 +87,37 @@ jobs:
           mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
           tar -xzf clang-r584948b.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
 
-      - name: 打印 Clang 工具链详细信息
+      - name: 下载并安装 GCC 4.9 工具链
+        run: |
+          cd kernel_workspace
+          echo "正在从 GitHub 下载 GCC 4.9 工具链..."
+          wget -q -c --show-progress --timeout=30 --tries=30 ${{ env.GCC_URL }} -O gcc-aarch64.tar.gz
+          echo "正在解压 GCC..."
+          mkdir -p gcc
+          tar -xzf gcc-aarch64.tar.gz -C gcc
+          # 修正：查找 aarch64-linux-android-as 的所在目录（没有 gcc 可执行文件）
+          GCC_BIN_PATH=$(find gcc -type f -name "aarch64-linux-android-as" -exec dirname {} \; | head -n1)
+          if [[ -n "$GCC_BIN_PATH" ]]; then
+            echo "GCC_BIN_PATH=${GCC_BIN_PATH}" >> $GITHUB_ENV
+            echo "找到 GCC 工具目录: ${GCC_BIN_PATH}"
+          else
+            echo "警告: 未找到 aarch64-linux-android-as，将尝试默认路径"
+            # 尝试常见的 bin 目录
+            if [ -d "gcc/bin" ]; then
+              echo "GCC_BIN_PATH=gcc/bin" >> $GITHUB_ENV
+            else
+              # 最后尝试查找任何 bin 目录
+              FALLBACK=$(find gcc -type d -name bin | head -n1)
+              if [ -n "$FALLBACK" ]; then
+                echo "GCC_BIN_PATH=${FALLBACK}" >> $GITHUB_ENV
+              else
+                echo "GCC_BIN_PATH=gcc/bin" >> $GITHUB_ENV   # 占位
+              fi
+            fi
+          fi
+          ls -la gcc/
+
+      - name: 打印工具链详细信息
         run: |
           cd kernel_workspace
           CLANG_BASE="prebuilts-master/clang/host/linux-x86/clang-r584948b"
@@ -121,7 +132,7 @@ jobs:
             echo "错误: 找不到 Clang 编译器！"
             exit 1
           fi
-
+          
       - name: 添加内核名称后缀
         run: |
           cd kernel_workspace
@@ -136,7 +147,7 @@ jobs:
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
 
-      - name: 配置构建环境 (禁用 MLGO，使用新版 Clang)
+      - name: 配置构建环境 (禁用 MLGO，使用新版 Clang + GCC)
         run: |
           cd kernel_workspace
           # 禁用 MLGO 相关优化（避免与新版 Clang 冲突）
@@ -145,7 +156,19 @@ jobs:
           # 替换 Clang 路径为自定义版本
           CLANG_REL_PATH="prebuilts-master/clang/host/linux-x86/clang-r584948b/bin"
           sed -i "s|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=$CLANG_REL_PATH|" common/build.config.common
+          echo 'CLANG_TRIPLE=aarch64-linux-gnu-' >> common/build.config.common
           
+          # 设置 GCC 交叉编译路径（CROSS_COMPILE 前缀）
+          if [[ -n "$GCC_BIN_PATH" ]]; then
+            GCC_ABS_PATH="$(pwd)/${GCC_BIN_PATH}"
+            echo "CROSS_COMPILE=${GCC_ABS_PATH}/aarch64-linux-android-" >> common/build.config.common
+            echo "已配置 GCC 路径: ${GCC_ABS_PATH}"
+          else
+            echo 'CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-' >> common/build.config.common
+            echo "使用默认 GCC 回退路径"
+          fi
+          cat common/build.config.common
+          ls $GITHUB_WORKSPACE/kernel_workspace/gcc/bin/ 2>/dev/null || echo "警告: gcc/bin 不存在"
           # 移除 check_defconfig 检查
           sed -i 's/check_defconfig//' ./common/build.config.gki
           
@@ -160,37 +183,30 @@ jobs:
           fi
           
           echo "构建配置完成"
+          cat common/build.config.common | grep -E "CROSS_COMPILE|CLANG_PREBUILT_BIN|CC"
 
       - name: 构建内核（使用旧版 pahole，移除不兼容 flags）
         run: |
           cd kernel_workspace
           
-          export PATH="/usr/bin:$PATH"
-          export KBUILD_VERBOSE=0
-          
-          # 1. 打印 pahole 版本（应为 1.22）
-          echo "=========================================="
-          echo "当前 pahole 版本信息："
-          pahole --version
-          echo "=========================================="
-          
-          # 2. 获取内核自动检测的 flags（用于兼容当前 pahole 版本）
-          if [[ -f "common/scripts/pahole-flags.sh" ]]; then
-            AUTO_FLAGS=$(PAHOLE=pahole common/scripts/pahole-flags.sh)
-            echo "内核自动检测的 PAHOLE_FLAGS: '$AUTO_FLAGS'"
+          # ========== 新增：将 Clang 和 GCC 工具链加入 PATH ==========
+          CLANG_BIN="$(pwd)/prebuilts-master/clang/host/linux-x86/clang-r584948b/bin"
+          if [[ -n "$GCC_BIN_PATH" ]]; then
+            GCC_BIN="$(pwd)/${GCC_BIN_PATH}"
           else
-            AUTO_FLAGS=""
-            echo "警告: 未找到 common/scripts/pahole-flags.sh，将不使用自动 flags"
+            GCC_BIN="$(pwd)/gcc/bin"
           fi
+          export PATH="${CLANG_BIN}:${GCC_BIN}:${PATH}"
+          echo "已更新 PATH：${PATH}"
+          # 验证关键工具是否可执行
+          which clang
+          which aarch64-linux-android-as || echo "注意：aarch64-linux-android-as 未在 PATH 中找到"
+          # ========== 结束新增 ==========
           
-          # 3. 使用旧版 pahole，不再添加额外 flags（新版特定的 --skip_encoding_btf_* 不支持）
-          export PAHOLE_FLAGS="$AUTO_FLAGS"
-          
-          echo "最终使用的 PAHOLE_FLAGS: '$PAHOLE_FLAGS'"
-          echo "=========================================="
-          
-          # 4. 执行构建，合并 stderr 并过滤无关警告
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
+          export KBUILD_VERBOSE=0
+          export HERMETIC_TOOLCHAIN=0
+          # 执行构建，合并 stderr 并过滤无关警告
+          LTO=thin V=1 BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh 2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
             { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
           
