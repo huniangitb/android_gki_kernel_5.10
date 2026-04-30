@@ -162,9 +162,11 @@ jobs:
           if [[ -n "$GCC_BIN_PATH" ]]; then
             GCC_ABS_PATH="$(pwd)/${GCC_BIN_PATH}"
             echo "CROSS_COMPILE=${GCC_ABS_PATH}/aarch64-linux-android-" >> common/build.config.common
+            echo "LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN=${GCC_ABS_PATH}/aarch64-linux-android-" >> common/build.config.common
             echo "已配置 GCC 路径: ${GCC_ABS_PATH}"
           else
             echo 'CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-' >> common/build.config.common
+            echo "LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-" >> common/build.config.common
             echo "使用默认 GCC 回退路径"
           fi
           cat common/build.config.common
