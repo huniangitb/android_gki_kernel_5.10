@@ -140,7 +140,9 @@ jobs:
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
           export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          
+          export KCFLAGS="${KCFLAGS} -D__ANDROID_COMMON_KERNEL__"
+          export KMI_GENERATION=9
+          export MAKE_GOALS="${MAKE_GOALS} Image.lz4"
           make V=1 -C kernel O=out ARCH=arm64 \
             CC=clang LD=ld.lld \
             CROSS_COMPILE=$CROSS_COMPILE \
@@ -218,7 +220,7 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel_workspace
           git clone https://github.com/Winkmoon/AnyKernel3 --depth=1
           rm -rf ./AnyKernel3/.git
-          cp kernel/out/arch/arm64/boot/Image AnyKernel3/
+          cp kernel/out/arch/arm64/boot/Image* AnyKernel3/
           echo "${{ env.KERNEL_VERSION }}" > AnyKernel3/kernel_version.txt
           cp kernel/out/kmi_diff.txt AnyKernel3/ 2>/dev/null || true
           cd AnyKernel3
