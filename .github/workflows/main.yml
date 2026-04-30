@@ -83,7 +83,7 @@ jobs:
           echo "# Custom additions for tmpfs features" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
-          
+          echo "CONFIG_BLK_DEV_IO_TRACE=y" >> "$DEFCONFIG_PATH"
           # 删除 BTF 相关配置（如果存在）
           sed -i '/^CONFIG_DEBUG_INFO_BTF\b/d' "$DEFCONFIG_PATH"
           sed -i '/^CONFIG_DEBUG_INFO\b/d' "$DEFCONFIG_PATH"
