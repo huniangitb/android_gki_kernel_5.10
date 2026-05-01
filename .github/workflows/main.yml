@@ -34,7 +34,7 @@ jobs:
       - name: 安装基础依赖
         run: |
           sudo apt update
-          sudo apt install -y curl bison flex make binutils dwarves git lld zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils pahole lz4
+          sudo apt install -y curl bison flex make binutils dwarves git lld zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils lz4
 
       - name: 初始化源码仓库
         run: |
@@ -74,6 +74,9 @@ jobs:
           echo "# Custom additions for tmpfs features" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
+          sed -i '/^CONFIG_DEBUG_INFO\b/d' "$DEFCONFIG_PATH"
+          sed -i '/^CONFIG_DEBUG_INFO_DWARF\b/d' "$DEFCONFIG_PATH"
+         
           # DroidSpaces 所需配置
           echo "" >> "$DEFCONFIG_PATH"
           echo "# DroidSpaces required configs" >> "$DEFCONFIG_PATH"
@@ -91,7 +94,7 @@ jobs:
           echo "CONFIG_IP_SET_HASH_NET=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_NETFILTER_XT_SET=y" >> "$DEFCONFIG_PATH"    
           echo "===== 修改后配置关键项 ====="
-          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_DEBUG_INFO|CONFIG_DEBUG_INFO_BTF" "$DEFCONFIG_PATH"
+          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE" "$DEFCONFIG_PATH"
 
       - name: 下载并安装自定义 Clang
         run: |
@@ -148,14 +151,13 @@ jobs:
             kernel-out-${{ env.KERNEL_VERSION }}-
             kernel-out-
 
-      - name: 构建内核（启用 BTF）
+      - name: 构建内核
         run: |
           cd kernel_workspace
-          export GENERATE_VMLINUX_BTF=1
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
+          BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
           echo "内核编译完成！"
 
-      - name: 上传额外构建文件（config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list, vmlinux.btf）
+      - name: 上传额外构建文件（config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list）
         run: |
           cd kernel_workspace
           mkdir -p build_artifacts
@@ -179,14 +181,6 @@ jobs:
           COMPARE_SCRIPT="build/abi/compare_to_symbol_list"
           if [[ -f "$COMPARE_SCRIPT" ]]; then
             cp "$COMPARE_SCRIPT" build_artifacts/
-          fi
-          
-          # 上传 vmlinux.btf
-          VMLINUX_BTF="out/android12-5.10/common/vmlinux.btf"
-          if [[ -f "$VMLINUX_BTF" ]]; then
-            cp "$VMLINUX_BTF" build_artifacts/
-          else
-            echo "警告: 未找到 vmlinux.btf（BTF 可能未生成）"
           fi
           
           echo "文件收集完成，内容："
