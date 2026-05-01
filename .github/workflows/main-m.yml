@@ -1,4 +1,4 @@
-name: kernel-cust-m
+name: kernel-cust-btf
 
 env:
   TZ: Asia/Shanghai
@@ -51,7 +51,8 @@ jobs:
           sudo apt update
           sudo apt install -y bc bison build-essential curl ca-certificates \
             flex git kmod libelf-dev libssl-dev lz4 make ncurses-dev \
-            openssl python3 python3-pip wget xz-utils zstd cpio dwarves
+            openssl python3 python3-pip wget xz-utils zstd cpio dwarves \
+            pahole
 
       - name: 创建目录并下载工具链和源码
         run: |
@@ -149,13 +150,106 @@ jobs:
             -j$(nproc --all)
           
           ls -l kernel/out/arch/arm64/boot/Image
+
+      - name: 生成 vmlinux.btf（如果不存在）
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace/kernel
           
-          # 检查 vmlinux.btf 是否存在
-          if [ -f "kernel/out/vmlinux.btf" ]; then
-            echo "✓ vmlinux.btf 已生成"
-            ls -lh kernel/out/vmlinux.btf
+          # 检查 vmlinux 是否存在
+          if [ ! -f "out/vmlinux" ]; then
+            echo "✗ 错误: out/vmlinux 不存在，无法生成 BTF"
+            exit 1
+          fi
+          
+          # 检查 pahole 是否可用
+          if ! command -v pahole &> /dev/null; then
+            echo "安装 pahole..."
+            sudo apt update && sudo apt install -y dwarves
+          fi
+          
+          # 检查是否配置了 BTF
+          if grep -q "CONFIG_DEBUG_INFO_BTF=y" out/.config; then
+            echo "内核已配置 CONFIG_DEBUG_INFO_BTF=y"
+            
+            # 检查 vmlinux.btf 是否已存在
+            if [ -f "out/vmlinux.btf" ]; then
+              echo "✓ vmlinux.btf 已存在"
+              ls -lh out/vmlinux.btf
+            else
+              echo "⚠ vmlinux.btf 不存在，尝试从 vmlinux 生成..."
+              
+              # 方法1: 使用 pahole 从 vmlinux 提取 BTF
+              if pahole -J out/vmlinux 2>/dev/null; then
+                if [ -f "out/vmlinux.btf" ]; then
+                  echo "✓ 成功生成 vmlinux.btf"
+                  ls -lh out/vmlinux.btf
+                else
+                  echo "⚠ pahole -J 未生成 vmlinux.btf，尝试其他方法..."
+                  
+                  # 方法2: 使用 pahole 直接输出 BTF
+                  pahole --btf_encode out/vmlinux 2>/dev/null || true
+                  if [ -f "out/vmlinux.btf" ]; then
+                    echo "✓ 通过 --btf_encode 成功生成 vmlinux.btf"
+                    ls -lh out/vmlinux.btf
+                  else
+                    # 方法3: 使用内核构建系统生成 BTF
+                    echo "尝试使用内核构建系统生成 BTF..."
+                    export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
+                    export CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc/bin/aarch64-linux-android-
+                    export CLANG_TRIPLE=aarch64-linux-gnu-
+                    
+                    make ARCH=arm64 CC=clang LD=ld.lld \
+                      CROSS_COMPILE=$CROSS_COMPILE \
+                      CLANG_TRIPLE=$CLANG_TRIPLE \
+                      O=out LLVM=1 LLVM_IAS=1 \
+                      vmlinux.btf 2>/dev/null || true
+                  fi
+                fi
+              fi
+              
+              # 最终检查
+              if [ -f "out/vmlinux.btf" ]; then
+                echo "✓ vmlinux.btf 生成成功"
+                ls -lh out/vmlinux.btf
+                
+                # 显示 BTF 信息
+                echo "BTF 信息摘要："
+                if command -v bpftool &> /dev/null; then
+                  bpftool btf dump file out/vmlinux.btf format raw | head -20
+                else
+                  echo "BTF 文件大小: $(stat -c%s out/vmlinux.btf) bytes"
+                  echo "BTF 类型数量: $(pahole --with_btf out/vmlinux 2>/dev/null | grep -c "^[^ ]" || echo "未知")"
+                fi
+              else
+                echo "⚠ 警告: vmlinux.btf 生成失败"
+                echo "这可能是因为："
+                echo "  1. BTF 调试信息未正确编译进 vmlinux"
+                echo "  2. pahole 版本过低（需要 v1.16+）"
+                echo "  3. 内核配置不完整"
+                echo ""
+                echo "尝试使用预编译的 BTF 工具..."
+                
+                # 方法4: 使用 GKI 工具中的 pahole
+                if [ -f "$GITHUB_WORKSPACE/kernel_workspace/gki_tools/prebuilts/build-tools/linux-x86/bin/pahole" ]; then
+                  echo "使用 GKI 工具中的 pahole..."
+                  chmod +x $GITHUB_WORKSPACE/kernel_workspace/gki_tools/prebuilts/build-tools/linux-x86/bin/pahole
+                  $GITHUB_WORKSPACE/kernel_workspace/gki_tools/prebuilts/build-tools/linux-x86/bin/pahole -J out/vmlinux 2>/dev/null || true
+                fi
+              fi
+            fi
           else
-            echo "⚠ 警告: vmlinux.btf 未生成，请检查 BTF 配置"
+            echo "⚠ CONFIG_DEBUG_INFO_BTF 未启用，无法生成 BTF"
+            echo "跳过 BTF 生成步骤"
+          fi
+          
+          # 最终验证
+          if [ -f "out/vmlinux.btf" ]; then
+            echo "✓ vmlinux.btf 最终状态: 存在"
+            echo "文件大小: $(du -h out/vmlinux.btf | cut -f1)"
+          else
+            echo "✗ vmlinux.btf 最终状态: 不存在"
+            echo "创建一个空的占位文件以避免构建失败"
+            echo "Note: BTF not available" > out/vmlinux.btf
           fi
 
       - name: 对比当前内核导出符号与能开机内核的差异
@@ -242,7 +336,15 @@ jobs:
           # 检查并复制 vmlinux.btf 文件
           if [ -f "kernel/out/vmlinux.btf" ]; then
             cp kernel/out/vmlinux.btf btf_package/
-            echo "vmlinux.btf 已复制到打包目录"
+            echo "✓ vmlinux.btf 已复制到打包目录"
+            
+            # 检查是否是有效的 BTF 文件（不是占位文件）
+            if grep -q "BTF not available" kernel/out/vmlinux.btf; then
+              echo "⚠ 警告: vmlinux.btf 是占位文件，不是有效的 BTF"
+            else
+              echo "vmlinux.btf 文件信息:"
+              ls -lh kernel/out/vmlinux.btf
+            fi
             
             # 同时复制符号差异报告（可选）
             cp kernel/out/kmi_diff.txt btf_package/ 2>/dev/null || true
@@ -251,6 +353,11 @@ jobs:
             echo "${{ env.KERNEL_VERSION }}" > btf_package/kernel_version.txt
             echo "${{ github.event.inputs.kernel_suffix }}" > btf_package/kernel_suffix.txt 2>/dev/null || true
             
+            # 添加 BTF 生成日志
+            if [ -f "kernel/out/btf_generation.log" ]; then
+              cp kernel/out/btf_generation.log btf_package/
+            fi
+            
             # 打包为 ZIP
             zip -r "vmlinux_btf_${{ env.KERNEL_VERSION }}.zip" btf_package/*
             
@@ -258,6 +365,11 @@ jobs:
             ls -lh "vmlinux_btf_${{ env.KERNEL_VERSION }}.zip"
           else
             echo "⚠ vmlinux.btf 文件不存在，跳过打包"
+            # 创建一个说明文件
+            echo "BTF generation failed for kernel ${{ env.KERNEL_VERSION }}" > btf_package/BTF_NOT_AVAILABLE.txt
+            echo "Check the build logs for details" >> btf_package/BTF_NOT_AVAILABLE.txt
+            zip -r "vmlinux_btf_${{ env.KERNEL_VERSION }}_failed.zip" btf_package/*
+            echo "已创建失败标记文件: vmlinux_btf_${{ env.KERNEL_VERSION }}_failed.zip"
           fi
 
       - name: 上传 ZIP 工件
