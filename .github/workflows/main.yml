@@ -216,7 +216,7 @@ jobs:
       - name: 克隆 AnyKernel3 并打包
         run: |
           cd kernel_workspace
-          git clone https://github.com/Winkmoon/AnyKernel3 --depth=1
+          git clone https://github.com/huniangitb/AnyKernel3/ --depth=1
           rm -rf ./AnyKernel3/.git
           IMAGE_FILE=$(find . -name Image | head -n1)
           if [[ -f "$IMAGE_FILE" ]]; then
