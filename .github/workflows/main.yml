@@ -1,12 +1,12 @@
-name: kerne-cust-p
+name: kerne-cust-Droidspaces
 env:
   TZ: Asia/Shanghai
   CPU: 'mt6895'
   FEIL: 'redmi+xiaomi'
   ANDROID_VERSION: 'android12'
-  KERNEL_VERSION: '5.10.246'
+  KERNEL_VERSION: '5.10.240'
   KERNEL_NAME: 'cust'
-  GCC_URL: 'https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/aarch64-linux-android-4.9-refs_tags_android-12.1.0_r27.tar.gz'
+  
 
 on:
   workflow_dispatch:
@@ -32,7 +32,7 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
-      - name: 安装基础依赖（移除 pahole，删除 BTF 支持）
+      - name: 安装基础依赖
         run: |
           sudo apt update
           sudo apt install -y curl bison flex make binutils dwarves git lld zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
@@ -71,7 +71,7 @@ jobs:
           patch -p1 < ../patches/002.posix_mqueue_abi_padding.patch
           echo "补丁应用完成"
 
-      - name: 直接修改 gki_defconfig（添加所需配置，移除 BTF）
+      - name: 直接修改 gki_defconfig
         run: |
           cd kernel_workspace
           DEFCONFIG_PATH="common/arch/arm64/configs/gki_defconfig"
@@ -84,12 +84,8 @@ jobs:
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_BLK_DEV_IO_TRACE=y" >> "$DEFCONFIG_PATH"
-          # 删除 BTF 相关配置（如果存在）
-          sed -i '/^CONFIG_DEBUG_INFO_BTF\b/d' "$DEFCONFIG_PATH"
-          sed -i '/^CONFIG_DEBUG_INFO\b/d' "$DEFCONFIG_PATH"
-          sed -i '/^# CONFIG_DEBUG_INFO is not set\b/d' "$DEFCONFIG_PATH"
-          
-          # 添加 DroidSpaces 所需配置（每个配置单独 echo）
+                    
+          # 添加 DroidSpaces 所需配置
           echo "" >> "$DEFCONFIG_PATH"
           echo "# DroidSpaces required configs" >> "$DEFCONFIG_PATH"
           echo "CONFIG_SYSVIPC=y" >> "$DEFCONFIG_PATH"
@@ -110,7 +106,7 @@ jobs:
           echo "===== 修改后配置关键项 ====="
           grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_DEBUG_INFO_REDUCED" "$DEFCONFIG_PATH"
 
-      - name: 下载并安装自定义 Clang (r584948b)（移除 GCC）
+      - name: 下载并安装自定义 Clang (r584948b)
         run: |
           cd kernel_workspace
           echo "正在从 GitHub 下载 Clang r584948b..."
@@ -125,7 +121,7 @@ jobs:
           CLANG_BASE="prebuilts-master/clang/host/linux-x86/clang-r584948b"
           CLANG_PATH="$(pwd)/${CLANG_BASE}/bin/clang"
           echo "=========================================="
-          echo "Clang 工具链详细信息（已移除 GCC）"
+          echo "Clang 工具链详细信息"
           echo "=========================================="
           echo "编译器路径: ${CLANG_PATH}"
           if [[ -f "${CLANG_PATH}" ]]; then
@@ -149,7 +145,7 @@ jobs:
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
 
-      - name: 配置构建环境（纯 Clang 构建，无 GCC）
+      - name: 配置构建环境
         run: |
           cd kernel_workspace
           # 禁用 MLGO 相关优化
@@ -159,52 +155,18 @@ jobs:
           CLANG_REL_PATH="prebuilts-master/clang/host/linux-x86/clang-r584948b/bin"
           sed -i "s|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=$CLANG_REL_PATH|" common/build.config.common
           
-          # 设置纯 Clang 交叉编译参数
-          echo 'CLANG_TRIPLE=aarch64-linux-gnu-' >> common/build.config.common
-          echo 'CROSS_COMPILE=aarch64-linux-gnu-' >> common/build.config.common
-          echo "CC=clang" >> common/build.config.common
-          echo "LD=ld.lld" >> common/build.config.common
-          echo "AR=llvm-ar" >> common/build.config.common
-          echo "NM=llvm-nm" >> common/build.config.common
-          echo "STRIP=llvm-strip" >> common/build.config.common
-          echo "OBJCOPY=llvm-objcopy" >> common/build.config.common
-          echo "OBJDUMP=llvm-objdump" >> common/build.config.common
-          echo "READELF=llvm-readelf" >> common/build.config.common
-          
-          # 移除 GCC 相关变量（如果存在）
-          sed -i '/^LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN/d' common/build.config.common
-          
-          # 设定详细输出
-          echo "V=1" >> common/build.config.common
-          
           # 移除 check_defconfig 检查
           sed -i 's/check_defconfig//' ./common/build.config.gki
-          
-          # 修复 dd 路径问题（如果存在）
-          LINK_VMLINUX="common/scripts/link-vmlinux.sh"
-          if [[ -f "$LINK_VMLINUX" ]]; then
-            sed -i 's/| dd of=/| \/usr\/bin\/dd of=/' "$LINK_VMLINUX"
-          fi
-          
-          echo "构建配置完成（纯 Clang 模式）"
+                 
+          echo "构建配置完成"
           cat common/build.config.common | grep -E "CROSS_COMPILE|CLANG_PREBUILT_BIN|CC|LD"
 
-      - name: 构建内核（完全使用 Clang，无 BTF）
+      - name: 构建内核
         run: |
           cd kernel_workspace
           
-          # 将 Clang 加入 PATH
-          CLANG_BIN="$(pwd)/prebuilts-master/clang/host/linux-x86/clang-r584948b/bin"
-          export PATH="${CLANG_BIN}:${PATH}"
-          echo "已更新 PATH：${PATH}"
-          which clang
-          
-          export KBUILD_VERBOSE=0
-          #export HERMETIC_TOOLCHAIN=0
           # 执行构建，过滤无关警告
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh  2>&1 | \
-            grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
-            { exit_code=${PIPESTATUS[0]}; if [ $exit_code -ne 0 ]; then exit $exit_code; fi; }
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
           
           echo "内核编译完成！"
 
