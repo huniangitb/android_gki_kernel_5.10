@@ -6,7 +6,6 @@ env:
   ANDROID_VERSION: 'android12'
   KERNEL_VERSION: '5.10.240'
   KERNEL_NAME: 'cust'
-  
 
 on:
   workflow_dispatch:
@@ -35,12 +34,9 @@ jobs:
       - name: 安装基础依赖
         run: |
           sudo apt update
-          sudo apt install -y curl bison flex make binutils dwarves git lld zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils
-          # 确保 dd 可用
-          which dd
-          sudo ln -sf /usr/bin/dd /bin/dd 2>/dev/null || true
+          sudo apt install -y curl bison flex make binutils dwarves git lld zip perl gcc python3 python-is-python3 bc libssl-dev libelf-dev abigail-tools coreutils pahole lz4
 
-      - name: 初始化源码仓库（预打包工具包）
+      - name: 初始化源码仓库
         run: |
           rm -rf kernel_workspace && mkdir kernel_workspace && cd kernel_workspace
           wget -q -c --show-progress --timeout=30 --tries=30 \
@@ -59,13 +55,10 @@ jobs:
         run: |
           cd kernel_workspace
           mkdir -p patches
-          # 补丁 1
           wget -q -O patches/001.fix_sysvipc_kabi.patch \
             https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch
-          # 补丁 2
           wget -q -O patches/002.posix_mqueue_abi_padding.patch \
             https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch
-          # 进入内核源码目录应用补丁
           cd common
           patch -p1 < ../patches/001.fix_sysvipc_kabi.patch
           patch -p1 < ../patches/002.posix_mqueue_abi_padding.patch
@@ -75,17 +68,13 @@ jobs:
         run: |
           cd kernel_workspace
           DEFCONFIG_PATH="common/arch/arm64/configs/gki_defconfig"
-          echo "===== 修改前配置关键项 ====="
-          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE" "$DEFCONFIG_PATH" || echo "未找到相关项"
           
           # 添加 tmpfs 扩展属性支持
           echo "" >> "$DEFCONFIG_PATH"
           echo "# Custom additions for tmpfs features" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_BLK_DEV_IO_TRACE=y" >> "$DEFCONFIG_PATH"
-                    
-          # 添加 DroidSpaces 所需配置
+          # DroidSpaces 所需配置
           echo "" >> "$DEFCONFIG_PATH"
           echo "# DroidSpaces required configs" >> "$DEFCONFIG_PATH"
           echo "CONFIG_SYSVIPC=y" >> "$DEFCONFIG_PATH"
@@ -100,18 +89,14 @@ jobs:
           echo "CONFIG_IP_SET=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_IP_SET_HASH_IP=y" >> "$DEFCONFIG_PATH"
           echo "CONFIG_IP_SET_HASH_NET=y" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_NETFILTER_XT_SET=y" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_DEBUG_INFO_REDUCED=y" >> "$DEFCONFIG_PATH"
-          
+          echo "CONFIG_NETFILTER_XT_SET=y" >> "$DEFCONFIG_PATH"    
           echo "===== 修改后配置关键项 ====="
-          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_DEBUG_INFO_REDUCED" "$DEFCONFIG_PATH"
+          grep -E "CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_DEBUG_INFO|CONFIG_DEBUG_INFO_BTF" "$DEFCONFIG_PATH"
 
-      - name: 下载并安装自定义 Clang (r584948b)
+      - name: 下载并安装自定义 Clang
         run: |
           cd kernel_workspace
-          echo "正在从 GitHub 下载 Clang r584948b..."
           wget -q -c --show-progress --timeout=30 --tries=30 https://github.com/huniangitb/Clang-r584948b/releases/download/v1.0.0/linux-x86-kernel-clang-r584948b.tar.gz -O clang-r584948b.tar.gz
-          echo "正在解压 Clang..."
           mkdir -p prebuilts-master/clang/host/linux-x86/clang-r584948b
           tar -xzf clang-r584948b.tar.gz -C prebuilts-master/clang/host/linux-x86/clang-r584948b
 
@@ -134,13 +119,12 @@ jobs:
       - name: 添加内核名称后缀
         run: |
           cd kernel_workspace
-          echo "替换内核版本后缀..."
           if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
             suffix="${{ github.event.inputs.kernel_suffix }}"
           else
             suffix="${{ env.KERNEL_NAME }}"
           fi
-          echo "当前内核版本后缀：${suffix}"
+          echo "内核版本后缀：${suffix}"
           for f in ./common/scripts/setlocalversion; do
             sed -i "\$s|echo \"\\\$res\"|echo \"-${suffix}\"|" "$f"
           done
@@ -148,29 +132,30 @@ jobs:
       - name: 配置构建环境
         run: |
           cd kernel_workspace
-          # 禁用 MLGO 相关优化
           sed -i '/regalloc-enable-advisor=release/s/^/# /' common/Makefile
-          
-          # 替换 Clang 路径为自定义版本
           CLANG_REL_PATH="prebuilts-master/clang/host/linux-x86/clang-r584948b/bin"
           sed -i "s|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin|CLANG_PREBUILT_BIN=$CLANG_REL_PATH|" common/build.config.common
-          
-          # 移除 check_defconfig 检查
           sed -i 's/check_defconfig//' ./common/build.config.gki
-                 
           echo "构建配置完成"
-          cat common/build.config.common | grep -E "CROSS_COMPILE|CLANG_PREBUILT_BIN|CC|LD"
 
-      - name: 构建内核
+      - name: 恢复编译缓存（out 目录）
+        uses: actions/cache@v4
+        id: kernel-cache
+        with:
+          path: kernel_workspace/out
+          key: kernel-out-${{ env.KERNEL_VERSION }}-${{ hashFiles('kernel_workspace/common/arch/arm64/configs/gki_defconfig', 'kernel_workspace/common/Makefile', 'kernel_workspace/common/build.config.*') }}
+          restore-keys: |
+            kernel-out-${{ env.KERNEL_VERSION }}-
+            kernel-out-
+
+      - name: 构建内核（启用 BTF）
         run: |
           cd kernel_workspace
-          
-          # 执行构建，过滤无关警告
+          export GENERATE_VMLINUX_BTF=1
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
-          
           echo "内核编译完成！"
 
-      - name: 上传额外构建文件 (config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list)
+      - name: 上传额外构建文件（config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list, vmlinux.btf）
         run: |
           cd kernel_workspace
           mkdir -p build_artifacts
@@ -179,60 +164,92 @@ jobs:
           if [[ -f "$CONFIG_FILE" ]]; then
             cp "$CONFIG_FILE" build_artifacts/config
             cp "$CONFIG_FILE" "build_artifacts/config_$(date +'%Y%m%d_%H%M%S').txt"
-          else
-            echo "警告: 未找到 $CONFIG_FILE"
           fi
           
           MODULE_SYMVERS="out/android12-5.10/common/Module.symvers"
           if [[ -f "$MODULE_SYMVERS" ]]; then
             cp "$MODULE_SYMVERS" build_artifacts/
-          else
-            echo "警告: 未找到 $MODULE_SYMVERS"
           fi
           
           ABI_SYMLIST="out/android12-5.10/common/abi_symbollist.raw"
           if [[ -f "$ABI_SYMLIST" ]]; then
             cp "$ABI_SYMLIST" build_artifacts/
-          else
-            echo "警告: 未找到 $ABI_SYMLIST"
           fi
           
           COMPARE_SCRIPT="build/abi/compare_to_symbol_list"
           if [[ -f "$COMPARE_SCRIPT" ]]; then
             cp "$COMPARE_SCRIPT" build_artifacts/
+          fi
+          
+          # 上传 vmlinux.btf
+          VMLINUX_BTF="out/android12-5.10/common/vmlinux.btf"
+          if [[ -f "$VMLINUX_BTF" ]]; then
+            cp "$VMLINUX_BTF" build_artifacts/
           else
-            echo "警告: 未找到 $COMPARE_SCRIPT"
+            echo "警告: 未找到 vmlinux.btf（BTF 可能未生成）"
           fi
           
           echo "文件收集完成，内容："
           ls -la build_artifacts/
 
-      - name: 上传构建工件
+      - name: 上传构建工件（额外文件）
         uses: actions/upload-artifact@v4
         with:
           name: Kernel_Build_Artifacts
           path: kernel_workspace/build_artifacts/
 
-      - name: 克隆 AnyKernel3 并打包
+      - name: 动态获取内核版本号并打包 AnyKernel3（标准 Image 和 Image.lz4）
         run: |
           cd kernel_workspace
+          # 从源码获取真实内核版本（如 5.10.240）
+          cd common
+          BASE_VER=$(make -s kernelversion)
+          cd ..
+          echo "动态基础版本: ${BASE_VER}"
+          echo "${BASE_VER}" > kernel_version_base.txt
+          
+          # 克隆 AnyKernel3
           git clone https://github.com/huniangitb/AnyKernel3/ --depth=1
           rm -rf ./AnyKernel3/.git
-          IMAGE_FILE=$(find . -name Image | head -n1)
-          if [[ -f "$IMAGE_FILE" ]]; then
-            cp "$IMAGE_FILE" AnyKernel3/
-            echo "已复制内核镜像: $IMAGE_FILE"
-          else
+          
+          # 查找内核镜像
+          IMAGE_FILE=$(find out -name "Image" | head -n1)
+          if [[ ! -f "$IMAGE_FILE" ]]; then
             echo "错误：未找到 Image 文件！"
             exit 1
           fi
+          
+          # 处理 Image.lz4：优先使用构建产物，否则用 lz4 压缩 Image
+          IMAGE_LZ4_FILE=$(find out -name "Image.lz4" | head -n1)
+          if [[ ! -f "$IMAGE_LZ4_FILE" ]]; then
+            echo "未找到现成的 Image.lz4，正在从 Image 压缩..."
+            lz4 -9 -f "$IMAGE_FILE" "Image.lz4"
+            IMAGE_LZ4_FILE="Image.lz4"
+          fi
+          
+          # ---- 打包标准 AnyKernel3 (Image) ----
+          cp "$IMAGE_FILE" AnyKernel3/
+          echo "${BASE_VER}" > AnyKernel3/kernel_version.txt
           cd AnyKernel3
-          echo "${{ env.KERNEL_VERSION }}" > kernel_version.txt
-          ZIPNAME="AnyKernel3_${{ env.KERNEL_VERSION }}.zip"
-          zip -r "../$ZIPNAME" ./*
-          echo "打包完成: $ZIPNAME"
+          ZIP_STD="AnyKernel3_${BASE_VER}-Image.zip"
+          zip -r "../${ZIP_STD}" ./*
+          cd ..
+          
+          # ---- 打包 LZ4 版 AnyKernel3 ----
+          cp -r AnyKernel3 AnyKernel3-lz4
+          cp "$IMAGE_LZ4_FILE" AnyKernel3-lz4/Image.lz4
+          # 可选：移除原有 Image（避免混淆）
+          rm -f AnyKernel3-lz4/Image
+          echo "${BASE_VER}" > AnyKernel3-lz4/kernel_version.txt
+          cd AnyKernel3-lz4
+          ZIP_LZ4="AnyKernel3_${BASE_VER}-Image.lz4.zip"
+          zip -r "../${ZIP_LZ4}" ./*
+          cd ..
+          
+          echo "打包完成："
+          ls -la *.zip
 
-      - name: 上传 ZIP 工件
+      - name: 上传所有 ZIP 工件
         uses: actions/upload-artifact@v4
         with:
           name: Kernel_ZIP_Artifacts
@@ -247,44 +264,47 @@ jobs:
       actions: read
 
     steps:
-      - name: 下载 ZIP 工件
+      - name: 下载所有 ZIP 工件
         uses: actions/download-artifact@v4
         with:
           name: Kernel_ZIP_Artifacts
           path: ./release_zips
 
-      - name: 设置环境变量并创建 Release
+      - name: 提取基础版本并创建 Release
         id: vars
         run: |
-          ZIP_FILE=$(ls ./release_zips/*.zip | head -n1)
-          if [[ -z "$ZIP_FILE" ]]; then
+          # 从任一 ZIP 中读取 kernel_version.txt（基础版本）
+          ANY_ZIP=$(ls ./release_zips/*.zip | head -n1)
+          if [[ -z "$ANY_ZIP" ]]; then
             echo "错误：未找到 ZIP 文件"
             exit 1
           fi
-          KERNEL_VER=$(unzip -p "$ZIP_FILE" kernel_version.txt 2>/dev/null || echo "${{ env.KERNEL_VERSION }}")
+          BASE_VER=$(unzip -p "$ANY_ZIP" kernel_version.txt 2>/dev/null || echo "${{ env.KERNEL_VERSION }}")
           if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            FULL_VERSION="${KERNEL_VER}-${{ github.event.inputs.kernel_suffix }}"
+            FULL_VERSION="${BASE_VER}-${{ github.event.inputs.kernel_suffix }}"
           else
-            FULL_VERSION="${KERNEL_VER}-${{ env.KERNEL_NAME }}"
+            FULL_VERSION="${BASE_VER}-${{ env.KERNEL_NAME }}"
           fi
           TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
           TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
-          TAG_NAME="${{ env.KERNEL_VERSION }}-${{ env.KERNEL_NAME }}-${TIME}"
+          TAG_NAME="${BASE_VER}-${FULL_VERSION}-${TIME}"
           echo "FULL_VERSION=${FULL_VERSION}" >> $GITHUB_ENV
+          echo "BASE_VER=${BASE_VER}" >> $GITHUB_ENV
           echo "TIME=${TIME}" >> $GITHUB_ENV
           echo "TIME_FORM=${TIME_FORM}" >> $GITHUB_ENV
           echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
 
-      - name: 创建 GitHub Release 并上传内核包
+      - name: 创建 GitHub Release 并上传所有内核包
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
           name: "内核 ${{ env.FULL_VERSION }}"
           body: |
             自动构建于 ${{ env.TIME_FORM }}
-            内核版本：${{ env.FULL_VERSION }}
+            内核版本：${{ env.FULL_VERSION }}（基础版本 ${{ env.BASE_VER }}）
             设备：${{ env.CPU }} / ${{ env.FEIL }}
             Android 版本：${{ env.ANDROID_VERSION }}
+            包含两个刷机包：标准 Image 格式 和 LZ4 压缩格式
           files: ./release_zips/*.zip
           draft: false
           prerelease: false
