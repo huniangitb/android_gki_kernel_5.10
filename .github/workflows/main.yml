@@ -200,7 +200,7 @@ jobs:
           which clang
           
           export KBUILD_VERBOSE=0
-          export HERMETIC_TOOLCHAIN=0
+          #export HERMETIC_TOOLCHAIN=0
           # 执行构建，过滤无关警告
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh  2>&1 | \
             grep -v -E "lexblock__recode_dwarf_types|tag__recode_dwarf_type|couldn't find 0x|couldn't find|DW_TAG_label" || \
