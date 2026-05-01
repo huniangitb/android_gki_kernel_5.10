@@ -154,7 +154,7 @@ jobs:
       - name: 构建内核
         run: |
           cd kernel_workspace
-          BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
           echo "内核编译完成！"
 
       - name: 上传额外构建文件（config, Module.symvers, abi_symbollist.raw, compare_to_symbol_list）
