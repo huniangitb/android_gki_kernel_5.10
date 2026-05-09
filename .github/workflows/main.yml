@@ -62,24 +62,31 @@ jobs:
           cd common
           patch -p1 < ../patches/001.fix_sysvipc_kabi.patch
           patch -p1 < ../patches/002.posix_mqueue_abi_padding.patch
-          echo "补丁应用完成"
+          echo "必需补丁应用完成"
 
       - name: 注入 NTsync 内核补丁
         run: |
           cd kernel_workspace
           cd common
-          # 下载 NTsync 补丁（适配 android12-5.10）
           wget -q -O ntsync_base.patch \
             https://raw.githubusercontent.com/Goldzxcbug/Droidspaces_Kernel_patch/refs/heads/main/NTsync/ntsync_base.patch
           wget -q -O ntsync_compat.patch \
             https://raw.githubusercontent.com/Goldzxcbug/Droidspaces_Kernel_patch/refs/heads/main/NTsync/ntsync_compat_android12-5.10.patch
-          # 应用补丁
           patch -p1 < ntsync_base.patch
           patch -p1 < ntsync_compat.patch
           cd ..
-          # 开启 NTsync 内核配置
           echo "CONFIG_NTSYNC=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "NTsync 补丁注入及配置开启完成"
+
+      - name: 注入 BBRv3 内核补丁
+        run: |
+          cd kernel_workspace
+          cd common
+          wget -q -O bbrv3-android12-5.10.patch \
+            https://raw.githubusercontent.com/WildKernels/kernel_patches/refs/heads/main/bbr/bbrv3-android12-5.10.patch
+          patch -p1 < bbrv3-android12-5.10.patch
+          cd ..
+          echo "BBRv3 补丁应用完成"
 
       - name: 直接修改 gki_defconfig
         run: |
@@ -317,6 +324,7 @@ jobs:
             Android 版本：${{ env.ANDROID_VERSION }}
             包含两个刷机包：标准 Image 格式 和 LZ4 压缩格式
             - 已注入 NTsync 补丁并开启配置
+            - 已注入 BBRv3 拥塞控制算法补丁
           files: ./release_zips/*.zip
           draft: false
           prerelease: false
