@@ -3490,22 +3490,29 @@ static int v4l2_ctrl_request_clone(struct v4l2_ctrl_handler *hdl,
 	struct v4l2_ctrl_ref *ref;
 	int err = 0;
 
-	if (WARN_ON(!hdl || hdl == from))
+	if (WARN_ON(!hdl || !from || hdl == from))
 		return -EINVAL;
 
 	if (hdl->error)
 		return hdl->error;
+	if (from->error)
+		return from->error;
 
 	WARN_ON(hdl->lock != &hdl->_lock);
 
-	mutex_lock(from->lock);
+	if (from->lock)
+		mutex_lock(from->lock);
 	list_for_each_entry(ref, &from->ctrl_refs, node) {
 		struct v4l2_ctrl *ctrl = ref->ctrl;
 		struct v4l2_ctrl_ref *new_ref;
 
-		/* Skip refs inherited from other devices */
-		if (ref->from_other_dev)
+		/*
+		 * Skip refs inherited from other devices,
+		 * or controls with a NULL handler
+		 */
+		if (ref->from_other_dev || WARN_ON(!ctrl || !ctrl->handler))
 			continue;
+		OPTIMIZER_HIDE_VAR(ctrl);
 		/* And buttons */
 		if (ctrl->type == V4L2_CTRL_TYPE_BUTTON)
 			continue;
@@ -3513,7 +3520,8 @@ static int v4l2_ctrl_request_clone(struct v4l2_ctrl_handler *hdl,
 		if (err)
 			break;
 	}
-	mutex_unlock(from->lock);
+	if (from->lock)
+		mutex_unlock(from->lock);
 	return err;
 }
 
@@ -3523,10 +3531,12 @@ static void v4l2_ctrl_request_queue(struct media_request_object *obj)
 		container_of(obj, struct v4l2_ctrl_handler, req_obj);
 	struct v4l2_ctrl_handler *main_hdl = obj->priv;
 
-	mutex_lock(main_hdl->lock);
+	if (main_hdl->lock)
+		mutex_lock(main_hdl->lock);
 	list_add_tail(&hdl->requests_queued, &main_hdl->requests_queued);
 	hdl->request_is_queued = true;
-	mutex_unlock(main_hdl->lock);
+	if (main_hdl->lock)
+		mutex_unlock(main_hdl->lock);
 }
 
 static void v4l2_ctrl_request_unbind(struct media_request_object *obj)
@@ -3535,13 +3545,15 @@ static void v4l2_ctrl_request_unbind(struct media_request_object *obj)
 		container_of(obj, struct v4l2_ctrl_handler, req_obj);
 	struct v4l2_ctrl_handler *main_hdl = obj->priv;
 
-	mutex_lock(main_hdl->lock);
+	if (main_hdl->lock)
+		mutex_lock(main_hdl->lock);
 	list_del_init(&hdl->requests);
 	if (hdl->request_is_queued) {
 		list_del_init(&hdl->requests_queued);
 		hdl->request_is_queued = false;
 	}
-	mutex_unlock(main_hdl->lock);
+	if (main_hdl->lock)
+		mutex_unlock(main_hdl->lock);
 }
 
 static void v4l2_ctrl_request_release(struct media_request_object *obj)
@@ -3590,15 +3602,22 @@ static int v4l2_ctrl_request_bind(struct media_request *req,
 {
 	int ret;
 
+	if (WARN_ON(!hdl || !from))
+		return -EINVAL;
+	OPTIMIZER_HIDE_VAR(hdl);
+	OPTIMIZER_HIDE_VAR(from);
+
 	ret = v4l2_ctrl_request_clone(hdl, from);
 
 	if (!ret) {
 		ret = media_request_object_bind(req, &req_ops,
 						from, false, &hdl->req_obj);
 		if (!ret) {
-			mutex_lock(from->lock);
+			if (from->lock)
+				mutex_lock(from->lock);
 			list_add_tail(&hdl->requests, &from->requests);
-			mutex_unlock(from->lock);
+			if (from->lock)
+				mutex_unlock(from->lock);
 		}
 	}
 	return ret;
@@ -3888,6 +3907,12 @@ v4l2_ctrls_find_req_obj(struct v4l2_ctrl_handler *hdl,
 
 	if (set && WARN_ON(req->state != MEDIA_REQUEST_STATE_UPDATING))
 		return ERR_PTR(-EBUSY);
+
+	if (WARN_ON(!hdl))
+		return ERR_PTR(-EINVAL);
+	if (hdl->error)
+		return ERR_PTR(hdl->error);
+	OPTIMIZER_HIDE_VAR(hdl);
 
 	obj = media_request_object_find(req, &req_ops, hdl);
 	if (obj)
@@ -4523,13 +4548,24 @@ void v4l2_ctrl_request_complete(struct media_request *req,
 		}
 		hdl->request_is_queued = true;
 		obj = media_request_object_find(req, &req_ops, main_hdl);
+		if (!obj) {
+			v4l2_ctrl_handler_free(hdl);
+			kfree(hdl);
+			return;
+		}
 	}
 	hdl = container_of(obj, struct v4l2_ctrl_handler, req_obj);
 
 	list_for_each_entry(ref, &hdl->ctrl_refs, node) {
 		struct v4l2_ctrl *ctrl = ref->ctrl;
-		struct v4l2_ctrl *master = ctrl->cluster[0];
+		struct v4l2_ctrl *master;
 		unsigned int i;
+
+		if (WARN_ON(!ctrl || !ctrl->handler))
+			continue;
+		master = ctrl->cluster[0];
+		if (WARN_ON(!master))
+			continue;
 
 		if (ctrl->flags & V4L2_CTRL_FLAG_VOLATILE) {
 			v4l2_ctrl_lock(master);
@@ -4550,11 +4586,13 @@ void v4l2_ctrl_request_complete(struct media_request *req,
 		v4l2_ctrl_unlock(ctrl);
 	}
 
-	mutex_lock(main_hdl->lock);
+	if (main_hdl->lock)
+		mutex_lock(main_hdl->lock);
 	WARN_ON(!hdl->request_is_queued);
 	list_del_init(&hdl->requests_queued);
 	hdl->request_is_queued = false;
-	mutex_unlock(main_hdl->lock);
+	if (main_hdl->lock)
+		mutex_unlock(main_hdl->lock);
 	media_request_object_complete(obj);
 	media_request_object_put(obj);
 }
